@@ -1,0 +1,74 @@
+{
+  "date": "2026-09-24",
+  "machine": "WSL2 i5-14400 host, 16 logical CPUs, RTX 5060 Ti 16 GB (driver 13030) — same host as gpu-sidecar.bench.json",
+  "purpose": "ticket 04 runtime input: laya-rust (candle) vs laya-goish CPU engine vs GPU sidecar, same weights, same inputs",
+  "competitor": {
+    "repo": "https://github.com/aovestdipaperino/laya-rust",
+    "commit": "5104bf2",
+    "commit_date": "2026-09-20",
+    "license": "Apache-2.0",
+    "stack": "candle-core 0.9 / candle-nn 0.9 / tokenizers 0.21",
+    "checkpoint": "convaiinnovations/laya (base) model.safetensors, 804 MB f16-on-disk",
+    "build_cpu": "cargo build --release — 46.21 s, 140 crates, clean",
+    "build_cuda": {
+      "result": "PASS after environment work (initially: cudarc v0.19.9 build-script exit 101 — bare `nvcc --version` not found, 13.4 not in supported list)",
+      "recipe_summary": "pip wheels pinned 13.3.x (nvcc/nvvm/crt/cccl/runtime/cublas/curand/nvrtc), CUDA_HOME symlink farm with unversioned dev .so names + libcuda.so from /usr/lib/wsl/lib, CUDARC_CUDA_VERSION=13030 (env beats build-system detection), CUDA_PATH also required (bindgen_cuda ignores CUDA_HOME), LD_LIBRARY_PATH=$CUDA_HOME/lib64 at runtime",
+      "ptx_versions": "nvcc 13.4 wheels emit PTX .version 9.4 (toolchain-driven; CUDA_COMPUTE_CAP does not change it) -> driver 13030 rejects; all-13.3 wheels emit .version 9.3/.target sm_120 -> loads and runs",
+      "runtime_dtype": "f32 works; f16 on CUDA produces NaN logits and panics in laya-rust src/model.rs:232 (partial_cmp on NaN)"
+    }
+  },
+  "weight_equivalence": {
+    "evidence": "refund noul, identical 45-token state: laya-rust 0.8911 (4 dp print) vs laya-goish 0.8911915421 (= committed examples/refund.output.json 0.8911915421485901)",
+    "trailing_newline_variant": "CLI --state-file with trailing newline -> 46 tokens -> noul 0.8902",
+    "gguf_size_mb": 807,
+    "safetensors_size_mb": 804
+  },
+  "warm_latency_ms": {
+    "protocol": "laya-rust: in-process loop, 3 warmups, n=30, includes tokenization; laya-goish CPU: usage.latency_ms from ./laya decide --raw --threads 16, n=3; GPU: sidecar socket round trip, token IDs in, 1 warmup",
+    "refund_45tok_1q": {
+      "laya_rust_cpu_f32": { "mean": 467.5, "p50": 461.4, "min": 435.5, "max": 543.8, "n": 30 },
+      "laya_rust_cuda_f32": { "mean": 18.7, "p50": 17.9, "min": 16.7, "max": 27.1, "n": 30, "recheck_n200": { "mean": 18.8, "p50": 17.8, "min": 15.9, "max": 38.8 } },
+      "laya_goish_cpu_16t": { "mean": 158.3, "p50": 157.0, "min": 152.0, "max": 166.0, "n": 3, "all": [166, 152, 157] },
+      "gpu_sidecar": { "mean": 33.397, "p50": 33.333, "min": 32.831, "max": 34.436, "n": 8, "source": "validation/gpu-sidecar.bench.json (same day)" }
+    },
+    "urgent_2q": {
+      "note": "laya-rust: one batched 124-token pass for both questions; laya-goish: per-question prompts 68 + 81 tokens, two passes",
+      "laya_rust_cpu_f32": { "mean": 810.8, "p50": 788.6, "min": 740.1, "max": 1071.5, "n": 30 },
+      "laya_rust_cuda_f32": { "mean": 27.6, "p50": 27.0, "min": 26.3, "max": 37.1, "n": 30, "recheck_n200": { "mean": 27.8, "p50": 27.3, "min": 25.5, "max": 42.6 } },
+      "laya_goish_cpu_16t": { "mean": 548.3, "p50": 544.0, "n": 3, "all": [532, 544, 569] },
+      "gpu_sidecar": {
+        "urgency_68tok": { "mean": 50.2, "p50": 50.7, "n": 10 },
+        "route_81tok": { "mean": 60.1, "p50": 60.8, "n": 10 },
+        "total_both": { "mean": 110.3, "p50": 111.7, "n": 10 }
+      }
+    },
+    "speedup_vs_laya_rust_cpu": {
+      "refund": { "laya_goish_cpu": 2.95, "gpu_sidecar": 14.0 },
+      "urgent": { "laya_goish_cpu": 1.48, "gpu_sidecar": 7.3 }
+    },
+    "laya_rust_cuda_vs_gpu_sidecar": {
+      "refund": "18.7 vs 33.4 ms — cuBLAS 1.8x faster than sidecar scalar-FMA matmul",
+      "urgent": "27.6 vs 110.3 ms — 4x via one batched 124-token pass vs two sequential passes",
+      "verification": "nvidia-smi during bench: 4473 MiB in use; answers identical to laya-rust CPU (refund noul 0.8911)"
+    }
+  },
+  "load_and_memory": {
+    "laya_rust_cpu": { "warm_load_ms": 2911, "cold_cli_wall_s": 14.68, "rss_kb_f32": 2499256 },
+    "laya_rust_cuda": { "warm_load_ms": 814, "vram_mib_observed_during_bench": 4473, "per_model_f32_gb": 1.7 },
+    "laya_goish_cpu": { "warm_load_approx_s": 1.5, "weights_resident_mb_f16": 807 },
+    "gpu_sidecar": { "load_both_models_s": "20-35", "vram_both_models_mib": 2240 }
+  },
+  "answers_urgent_case": {
+    "laya_rust_batched": { "route": "billing", "p": { "billing": 0.6837, "technical": 0.2488, "security": 0.0675 }, "urgency_score": 1.4071, "urgency_confidence": 0.2906, "input_tokens": 124 },
+    "laya_goish_per_question": { "route": "technical", "p": { "billing": 0.265326, "technical": 0.704687, "security": 0.029987 }, "urgency_score": 1.406219, "urgency_confidence": 0.290710, "tokens": [68, 81] },
+    "finding": "choice flip route billing vs technical from prompt composition (batched multi-question vs per-question), same weights; urgency stays close"
+  },
+  "decision": "Not adopted as the engine for ticket 04, but its matmul path is: link pip-wheel libcublas.so.13 in the sidecar (proven viable here) or move matmul to tensor cores, and consider batched multi-question prompts (27.6 vs 110.3 ms on urgent). laya-rust itself remains unsuitable as a drop-in: no GGUF graph_spec, no OpenThai, batched prompts flip route on urgent, f16-on-CUDA NaNs in its own code, f32 residency 1.7 GB/model does not fit the two-model budget. See laya-rust-comparison.report.md.",
+  "appendix": {
+    "bench_example": {
+      "path": "examples/bench.rs added to throwaway clone /tmp/opencode/laya-rust",
+      "source": "use laya::{Agent, Options, Question};\nuse serde_json::{json, Value};\nuse std::time::Instant;\n\nfn bench_case(agent: &Agent, name: &str, state: Value, questions: Vec<(String, Question)>, iters: usize) {\n    for _ in 0..3 { let _ = agent.system_one(&state, &questions); }\n    let mut times: Vec<f64> = Vec::with_capacity(iters);\n    for _ in 0..iters {\n        let t = Instant::now();\n        let r = agent.system_one(&state, &questions).unwrap();\n        times.push(t.elapsed().as_secs_f64() * 1000.0);\n        let _ = r.usage.input_tokens;\n    }\n    times.sort_by(|a, b| a.partial_cmp(b).unwrap());\n    let mean: f64 = times.iter().sum::<f64>() / times.len() as f64;\n    println!(\"{:<10} mean={:6.1}ms  p50={:6.1}ms  min={:6.1}ms  max={:6.1}ms  (n={})\", name, mean, times[iters / 2], times[0], times[iters - 1], iters);\n}\n\nfn main() -> anyhow::Result<()> {\n    let dir = std::env::args().nth(1).unwrap_or_else(|| \"models/laya-base\".into());\n    let iters: usize = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(30);\n    let t0 = Instant::now();\n    let agent = Agent::from_dir(&dir, Options::default())?;\n    println!(\"model_load  {:?} ({} ms)\", dir, t0.elapsed().as_millis());\n    let refund_state = json!(\"I was charged twice. Please refund the duplicate payment.\");\n    let refund_q = vec![(\"refund\".to_string(), Question::noul(\"Does the customer ask for money back?\"))];\n    let urgent_state = json!(\"The payment gateway has been down for six hours and three enterprise customers are threatening to cancel their contracts unless this is fixed today. Escalating again because the first ticket got no response.\");\n    let urgent_q = vec![\n        (\"urgency\".to_string(), Question::score(\"How urgent is this message?\", [\"routine\", \"same-day\", \"drop everything\"])),\n        (\"route\".to_string(), Question::choice(\"Which team should handle it?\", [\"billing\", \"technical\", \"security\"])),\n    ];\n    let r = agent.system_one(&refund_state, &refund_q)?;\n    println!(\"refund answer: {}\", serde_json::to_string(&r)?);\n    let r = agent.system_one(&urgent_state, &urgent_q)?;\n    println!(\"urgent answer: {}\", serde_json::to_string(&r)?);\n    bench_case(&agent, \"refund\", refund_state, refund_q, iters);\n    bench_case(&agent, \"urgent\", urgent_state, urgent_q, iters);\n    Ok(())\n}"
+    },
+    "gpu_urgent_bench_protocol": "sidecar serve; for each question from validation/gpu-drift.py cpu_decide(): sidecar_request({ids, markers, qtype}) x10 after warmup; per-question and paired-total timings above"
+  }
+}
