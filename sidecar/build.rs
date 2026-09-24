@@ -9,4 +9,7 @@ fn main() {
     } else {
         println!("cargo:rustc-link-lib=dylib=cuda");
     }
+    // igpu-probe dlopens libze_loader/libOpenCL at run time; -ldl works on
+    // every glibc (a stub library on >= 2.34, the real thing before).
+    println!("cargo:rustc-link-lib=dylib=dl");
 }
