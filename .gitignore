@@ -16,3 +16,10 @@ __pycache__/
 
 /dist/*
 !/dist/.gitkeep
+
+.omo
+.scratch
+# GPU sidecar build artifacts (kernels built via pip-wheel nvcc, see sidecar/build.sh)
+/sidecar/target/
+/sidecar/kernels/*.cubin
+/sidecar/kernels/*.ptx

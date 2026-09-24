@@ -1,0 +1,26 @@
+[package]
+name = "laya-gpu-sidecar"
+version = "0.1.0"
+edition = "2021"
+description = "GPU sidecar PoC: Laya forward pass on CUDA (RTX 5060 Ti), resident weights, UDS JSON-lines IPC"
+publish = false
+
+[dependencies]
+serde_json = "1"
+
+[[bin]]
+name = "laya-gpu-sidecar"
+path = "src/main.rs"
+
+# iGPU probe: Vulkan device enumeration (loader-only, dlopen at runtime)
+[[bin]]
+name = "igpu-probe"
+path = "src/igpu_probe.rs"
+
+[dependencies.ash]
+version = "0.38"
+features = ["loaded"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
