@@ -1,0 +1,7 @@
+# Toolchain pinning for laya-goish (no_std Rust + Goish runtime)
+# Managed by mise: https://mise.jdx.dev
+
+[tools]
+# Pin the Rust stable toolchain used to build the release binary.
+rust = "1.96.0"
+python = "3.12"
