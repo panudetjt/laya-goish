@@ -220,3 +220,86 @@ The ~6x gap is architectural, not a defect: OpenThai runs 24 sequential transfor
    - Goish `1.0.0-alpha.14` provides a measurable ~8.4% latency drop over alpha.13 thanks to non-blocking SIMD preemption.
    - GPU utilization is unsupported by design, but CPU latency of ~260–275 ms is fully viable for real-time classification workflows.
    - OpenThai-SystemOne runs correctly on the same binary; expect ~1.6 s per Thai decision at 16 threads (see section 5).
+
+> **Note:** sections 1–6 record the v0.1.0 / alpha.14 baseline as shipped. Section 7 supersedes the operational recommendations with the optimized engine.
+
+---
+
+## 7. Optimization Results (2026-09-24, commits `80f27f9` + `8fdf3bc`)
+
+Same machine, same harness as sections 3–5 (1 warm-up + 8 measured requests, `usage.latency_ms`).
+
+### 7.1 What changed
+
+**`80f27f9` — matmul memory-traffic rework (outputs bit-identical):**
+
+1. **F16-resident weights**: matrices keep their on-disk F16 layout in RAM and the SIMD kernel converts halves to floats via F16C on the fly. F16→F32 is exact, so results are unchanged while streamed weight bytes and resident weight RAM halve.
+2. **12-row register blocking**: each streamed weight load is amortized across up to 12 token rows (const-generic `block::<NR>` keeps accumulators in YMM registers) instead of 4, cutting passes over each weight matrix ~3×.
+3. **Output-feature partitioning**: workers own disjoint weight-row slices instead of token rows, so the weight matrix streams once per row block regardless of worker count, and small token counts still engage every thread.
+
+**`8fdf3bc` — Phase 2 round:**
+
+1. **GDN head-parallelism**: the Gated-DeltaNet recurrence runs its 16 independent heads across workers (per-head order unchanged, disjoint outputs) — bit-identical, OpenThai 16T 1129.4 → 934.4 ms measured in isolation.
+2. **AVX2+FMA `dot`**: 8-wide partial sums replace the sequential scalar reduction. Max probability drift vs the previous binary: **9.2e-07** (adoption gate was 5e-4), zero answer changes.
+3. **Q8_0 residency (opt-in)**: matrices can stay resident as Q8_0 blocks (34 B / 32 values) dequantized in-kernel; `scripts/quantize-q8.py` requantizes F16 GGUFs.
+
+Dropped with rationale: weighted P/E-core partitions (Goish exposes no thread-affinity API; prefer `--threads 12` on 6P+4E hybrids where 12T wins), request batching (no measured concurrent load), GELU/norm vectorization (secondary to `dot`).
+
+### 7.2 Latency & memory
+
+| Config | Baseline (1d94f0b) | After `80f27f9` | Final (`8fdf3bc`) | Total |
+|---|:---:|:---:|:---:|:---:|
+| Laya F16 16T | 292.5 ms | 230.3 ms | **205.0 ms** | **1.43×** |
+| Laya F16 12T | — | ~205 ms | 220.9 ms | |
+| OpenThai F16 16T | 1319.6 ms | 1129.4 ms | **905.4 ms** | **1.46×** |
+| OpenThai F16 12T | — | ~1085 ms | **870.6 ms** | **1.52×** (best) |
+| Laya Q8_0 16T / 12T | — | — | 214.0 / 221.5 ms | latency-neutral |
+| OpenThai Q8_0 16T / 12T | — | — | 915.9 / 934.5 ms | latency-neutral |
+| Startup (load + 1 inference, Laya) | 1.41 s | 0.56 s | 0.56 s | 2.5× |
+
+Resident RAM (VmHWM): Laya 2.38 → 1.59 GiB (F16) → **0.95 GiB** (Q8_0); OpenThai 2.89 → 1.96 GiB (F16) → **1.10 GiB** (Q8_0).
+
+Thread guidance flipped with the optimizations: Laya is now fastest at `--threads 16` (scalar share shrank, so E-core straggle matters less), while OpenThai remains fastest at `--threads 12`.
+
+### 7.3 Determinism
+
+- **F16 path stays bit-identical** through every change above, verified against the baseline binary across both models, all reference requests, thread counts 1/2/4/5/7/12/16, and CLI/serve/daemon paths.
+- Q8_0 carries quantization error by design; see 7.4.
+
+### 7.4 Q8_0 decision (measured, not assumed)
+
+Drift measured across 6 reference cases (2 models × 3 requests, including crafted `examples/urgent-score.json` and `examples/openthai-mixed.json`):
+
+| Metric | Gate | Measured |
+|---|---|---|
+| Discrete choice flips | 0 | **0** |
+| max \|Δprobability\| | ≤ 0.02 | **0.0178** |
+| max \|Δscore\| | ≤ 0.10 | **0.0181** |
+
+**Decision: adopted as an opt-in model variant.** F16 remains the default and the only bit-identical path; Q8_0 trades bit-exactness for ~half the resident RAM at equal latency (≈2× models per host). One rule is baked into the quantizer: **embedding tables stay F16** — quantizing the Laya embedding table pushed probability drift to 0.0212, past the gate.
+
+The gates are executable and re-runnable:
+
+```bash
+scripts/quantize-q8.py models/laya_english_f16.gguf models/laya_english_q8_0.gguf
+scripts/quantize-q8.py models/openthai_systemone_v03_f16.gguf models/openthai_systemone_v03_q8_0.gguf
+.venv/bin/python3 validation/quantized-drift.py ./laya \
+  models/laya_english_f16.gguf models/laya_english_q8_0.gguf \
+  models/openthai_systemone_v03_f16.gguf models/openthai_systemone_v03_q8_0.gguf examples
+```
+
+### 7.5 Recommended operations (updated)
+
+```bash
+# Fastest Laya English configuration on i5-14400 (~205 ms per request)
+./laya serve models/laya_english_f16.gguf --host 127.0.0.1 --port 8080 --threads 16
+
+# Fastest OpenThai configuration (~0.87 s per Thai decision)
+./laya serve models/openthai_systemone_v03_f16.gguf --host 127.0.0.1 --port 8081 --threads 12
+
+# Memory-constrained deployments: Q8_0 variants, equal speed, ~half the RAM
+./laya serve models/laya_english_q8_0.gguf --port 8080 --threads 16
+./laya serve models/openthai_systemone_v03_q8_0.gguf --port 8081 --threads 12
+```
+
+Requires AVX2/FMA/F16C (checked at startup with a clear error on unsupported CPUs).
