@@ -33,11 +33,13 @@
     "osrelease": "5.15.167.4-microsoft-standard-WSL2",
     "wsl2": true
   },
-  "igpu_runtime_candidates": [],
+  "igpu_runtime_candidates": [
+    "opencl"
+  ],
   "level_zero": {
-    "available": false,
-    "error": "not_installed: libze_loader.so: cannot open shared object file: No such file or directory",
-    "loader": "not_installed"
+    "available": true,
+    "error": "zeInit failed: 0x78000001",
+    "loader": "loaded"
   },
   "notes": [
     "NVIDIA GPU visible: select the CUDA tier (ticket 03 measured choice). iGPU tier is not the primary path on this host.",
@@ -45,10 +47,30 @@
   ],
   "opencl": {
     "available": true,
-    "error": "clGetPlatformIDs: 0xfffffc17",
-    "icds": [],
+    "icds": [
+      "/usr/lib/x86_64-linux-gnu/intel-opencl/libigdrcl.so"
+    ],
     "loader": "loaded",
-    "platforms": []
+    "platforms": [
+      {
+        "devices": [
+          {
+            "available": null,
+            "compute_units": 24,
+            "device_version": "OpenCL 3.0 NEO ",
+            "driver_version": "23.43.027642",
+            "fp16": true,
+            "is_real_device": true,
+            "max_clock_mhz": 1550,
+            "name": "Intel(R) Graphics [0x4682]",
+            "reported_type": "CPU",
+            "vendor": "Intel(R) Corporation"
+          }
+        ],
+        "name": "Intel(R) OpenCL Graphics",
+        "version": "Intel(R) Corporation"
+      }
+    ]
   },
   "probe_version": 2,
   "recommended_tier": "cuda",

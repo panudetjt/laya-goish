@@ -24,7 +24,7 @@ use std::ffi::{c_void, CStr};
 // ---------------------------------------------------------------------------
 
 /// Software-rasterizer / CPU-fallback device names seen in the wild.
-const CPU_FALLBACK_MARKERS: [&str; 4] = ["llvmpipe", "lavapipe", "swiftshader", "softpipe"];
+const CPU_FALLBACK_MARKERS: [&str; 5] = ["llvmpipe", "lavapipe", "swiftshader", "softpipe", "pocl"];
 
 fn is_cpu_fallback(name: &str, dev_type: &str) -> bool {
     if dev_type == "CPU" || dev_type == "OTHER" {
@@ -32,6 +32,40 @@ fn is_cpu_fallback(name: &str, dev_type: &str) -> bool {
     }
     let lower = name.to_ascii_lowercase();
     CPU_FALLBACK_MARKERS.iter().any(|m| lower.contains(m))
+}
+
+/// OpenCL device type flags are unreliable on Intel NEO over WSL/dxg (the
+/// driver reports CL_DEVICE_TYPE_CPU for the iGPU and errors on
+/// CL_DEVICE_AVAILABLE with CL_INVALID_VALUE) — judge a device by its name.
+/// An OpenCL CPU device is either a CPU runtime (pocl, Intel CPU Runtime) or
+/// named after the host CPU model.
+fn opencl_device_is_real(name: &str, host_cpu_model: &str) -> bool {
+    if is_cpu_fallback(name, "") {
+        return false;
+    }
+    host_cpu_model.is_empty() || !name.contains(host_cpu_model)
+}
+
+fn cpu_model_from_cpuinfo(cpuinfo: &str) -> String {
+    cpuinfo
+        .lines()
+        .find(|l| l.starts_with("model name"))
+        .and_then(|l| l.split(':').nth(1).map(|v| v.trim().to_string()))
+        .unwrap_or_default()
+}
+
+fn host_cpu_model() -> String {
+    std::fs::read_to_string("/proc/cpuinfo")
+        .map(|s| cpu_model_from_cpuinfo(&s))
+        .unwrap_or_default()
+}
+
+/// OpenCL reports param sizes INCLUDING the terminating NUL, and Intel NEO
+/// sometimes adds a second NUL — trim everything from the first NUL.
+fn cl_bytes_to_string(buf: &[u8], got: usize) -> String {
+    let n = got.min(buf.len());
+    let end = buf[..n].iter().position(|&b| b == 0).unwrap_or(n);
+    String::from_utf8_lossy(&buf[..end]).into_owned()
 }
 
 fn osrelease_is_wsl2(osrelease: &str) -> bool {
@@ -432,11 +466,27 @@ unsafe fn read_cl_str(
     let mut buf = [0u8; 512];
     let mut got: usize = 0;
     if f(obj, param, buf.len(), buf.as_mut_ptr() as *mut c_void, &mut got) == 0 && got > 0 {
-        let end = got.min(buf.len() - 1);
-        buf[end] = 0;
-        String::from_utf8_lossy(&buf[..end]).into_owned()
+        cl_bytes_to_string(&buf, got)
     } else {
         String::new()
+    }
+}
+
+/// Some devices reject individual queries (NEO-on-WSL: CL_DEVICE_AVAILABLE
+/// returns CL_INVALID_VALUE) — None lets callers emit "unknown" instead of a
+/// false fact.
+unsafe fn read_cl_scalar_checked(
+    f: unsafe extern "C" fn(*mut c_void, u32, usize, *mut c_void, *mut usize) -> i32,
+    obj: *mut c_void,
+    param: u32,
+    bytes: usize,
+) -> Option<u64> {
+    let mut v: u64 = 0;
+    let mut got: usize = 0;
+    if f(obj, param, bytes, &mut v as *mut u64 as *mut c_void, &mut got) != 0 {
+        None
+    } else {
+        Some(v)
     }
 }
 
@@ -517,6 +567,7 @@ fn probe_opencl() -> (Value, RuntimeSummary) {
         }
 
         let mut platforms_out = Vec::new();
+        let host_cpu = host_cpu_model();
         for p in platforms {
             let name = read_cl_str(get_platform_info, p, CL_PLATFORM_NAME);
             let version = read_cl_str(get_platform_info, p, CL_PLATFORM_VERSION);
@@ -530,28 +581,29 @@ fn probe_opencl() -> (Value, RuntimeSummary) {
                 {
                     for d in devs {
                         let type_bits = read_cl_scalar(get_info, d, CL_DEVICE_TYPE, 8);
-                        let dtype = if type_bits & CL_DEVICE_TYPE_GPU != 0 {
+                        let reported_type = if type_bits & CL_DEVICE_TYPE_GPU != 0 {
                             "GPU"
                         } else if type_bits & CL_DEVICE_TYPE_CPU != 0 {
                             "CPU"
                         } else {
                             "OTHER"
                         };
-                        let real = dtype == "GPU";
+                        let dname = read_cl_str(get_info, d, CL_DEVICE_NAME);
                         let vendor = read_cl_str(get_info, d, CL_DEVICE_VENDOR);
+                        let real = opencl_device_is_real(&dname, &host_cpu);
                         if real {
                             summary.saw_real_device = true;
                             if opencl_vendor_is_nvidia(&vendor) {
                                 summary.saw_nvidia = true;
                             }
-                        } else if dtype == "CPU" {
+                        } else {
                             summary.saw_cpu_fallback = true;
                         }
                         devices_out.push(json!({
-                            "name": read_cl_str(get_info, d, CL_DEVICE_NAME),
+                            "name": dname,
                             "vendor": vendor,
-                            "type": dtype,
-                            "available": read_cl_scalar(get_info, d, CL_DEVICE_AVAILABLE, 1) != 0,
+                            "reported_type": reported_type,
+                            "available": read_cl_scalar_checked(get_info, d, CL_DEVICE_AVAILABLE, 1),
                             "driver_version": read_cl_str(get_info, d, CL_DRIVER_VERSION),
                             "device_version": read_cl_str(get_info, d, CL_DEVICE_VERSION),
                             "compute_units": read_cl_scalar(get_info, d, CL_DEVICE_MAX_COMPUTE_UNITS, 4),
@@ -1050,6 +1102,43 @@ mod tests {
         assert!(!opencl_vendor_is_nvidia("Mesa/X.org"));
         assert!(!opencl_vendor_is_nvidia("Intel Corporation"));
         assert!(!opencl_vendor_is_nvidia(""));
+    }
+
+    #[test]
+    fn opencl_real_device_by_name_not_type_flag() {
+        const I5: &str = "Intel(R) Core(TM) i5-14400";
+        // NEO-on-WSL iGPU: name-based, type flag ignored (driver says CPU).
+        assert!(opencl_device_is_real("Intel(R) Graphics [0x4682]", I5));
+        assert!(opencl_device_is_real("Intel(R) Graphics [0x4682]", ""));
+        // A CPU device is named after the host CPU model.
+        assert!(!opencl_device_is_real(I5, I5));
+        assert!(!opencl_device_is_real("pocl-x86_64", I5));
+        assert!(!opencl_device_is_real("llvmpipe (LLVM 20.1.2)", I5));
+    }
+
+    #[test]
+    fn cl_strings_trim_at_first_nul() {
+        let mut buf = [0u8; 32];
+        let src = b"OpenCL 3.0 NEO\0";
+        buf[..src.len()].copy_from_slice(src);
+        assert_eq!(cl_bytes_to_string(&buf, src.len()), "OpenCL 3.0 NEO");
+        // NEO sometimes appends a second NUL.
+        let src2 = b"Intel(R) Graphics [0x4682]\0\0";
+        let mut buf2 = [0u8; 64];
+        buf2[..src2.len()].copy_from_slice(src2);
+        assert_eq!(
+            cl_bytes_to_string(&buf2, src2.len()),
+            "Intel(R) Graphics [0x4682]"
+        );
+        assert_eq!(cl_bytes_to_string(&buf2, 0), "");
+        assert_eq!(cl_bytes_to_string(&buf2, 999), "Intel(R) Graphics [0x4682]");
+    }
+
+    #[test]
+    fn cpu_model_extracted_from_cpuinfo() {
+        let cpuinfo = "processor\t: 0\nvendor_id\t: GenuineIntel\nmodel name\t: Intel(R) Core(TM) i5-14400\nflags\t: avx2\n";
+        assert_eq!(cpu_model_from_cpuinfo(cpuinfo), "Intel(R) Core(TM) i5-14400");
+        assert_eq!(cpu_model_from_cpuinfo("processor\t: 0\n"), "");
     }
 
     #[test]
