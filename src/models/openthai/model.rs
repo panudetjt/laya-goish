@@ -351,6 +351,26 @@ impl Full {
         self.o.apply(&out, None, threads)
     }
 }
+// Conv1d + SiLU over output channels [c0, c1) for every token. Workers own
+// disjoint channel ranges; each element's 4-tap summation order and scalar
+// silu match the previous serial loop, so outputs are bit-identical.
+// Inputs live through the caller's Wait(); no pointer escapes.
+fn conv_channels(s: usize, rawp: usize, convp: usize, qkvp: usize, c0: usize, c1: usize) {
+    let raw = unsafe { core::slice::from_raw_parts(rawp as *const f32, s * 6144) };
+    let conv = unsafe { core::slice::from_raw_parts(convp as *const f32, 6144 * 4) };
+    let qkv = unsafe { core::slice::from_raw_parts_mut(qkvp as *mut f32, s * 6144) };
+    for i in 0..s {
+        for c in c0..c1 {
+            let mut v = 0.;
+            for j in 0..4 {
+                if i + j >= 3 {
+                    v += raw[(i + j - 3) * 6144 + c] * conv[c * 4 + j];
+                }
+            }
+            qkv[i * 6144 + c] = silu(v);
+        }
+    }
+}
 impl Delta {
     fn run(&self, x: &[f32], threads: usize) -> Vec<f32> {
         let s = x.len() / 1024;
@@ -359,16 +379,27 @@ impl Delta {
         let a = self.a.apply(x, None, threads);
         let b = self.b.apply(x, None, threads);
         let mut qkv = vec![0.; raw.len()];
-        for i in 0..s {
-            for c in 0..6144 {
-                let mut v = 0.;
-                for j in 0..4 {
-                    if i + j >= 3 {
-                        v += raw[(i + j - 3) * 6144 + c] * self.conv[c * 4 + j];
+        {
+            let rawp = raw.as_ptr() as usize;
+            let convp = self.conv.as_ptr() as usize;
+            let qkvp = qkv.as_mut_ptr() as usize;
+            let count = threads.min(6144).max(1);
+            let per = 6144usize.div_ceil(count);
+            let wg = Arc::new(WaitGroup::new());
+            wg.Add((count - 1) as i64);
+            for t in 1..count {
+                let wg = wg.clone();
+                let c0 = (t * per).min(6144);
+                let c1 = ((t + 1) * per).min(6144);
+                go!(move || {
+                    if c1 > c0 {
+                        conv_channels(s, rawp, convp, qkvp, c0, c1);
                     }
-                }
-                qkv[i * 6144 + c] = silu(v);
+                    wg.Done();
+                });
             }
+            conv_channels(s, rawp, convp, qkvp, 0, per.min(6144));
+            wg.Wait();
         }
         let mut out = vec![0.; s * 2048];
         let outp = out.as_mut_ptr() as usize;

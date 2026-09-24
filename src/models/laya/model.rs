@@ -348,9 +348,11 @@ impl Model {
             let f = l.down.w.cols;
             let mut m = vec![0.; s * f];
             for i in 0..s {
-                for j in 0..f {
-                    m[i * f + j] = tensor::gelu(up[i * 2 * f + j]) * up[i * 2 * f + f + j]
-                }
+                tensor::gelu_mul(
+                    &up[i * 2 * f..i * 2 * f + f],
+                    &up[i * 2 * f + f..(i + 1) * 2 * f],
+                    &mut m[i * f..(i + 1) * f],
+                );
             }
             tensor::add(&mut h, &l.down.run(&m, threads));
         }
@@ -375,9 +377,7 @@ impl Model {
         }
         let x = self.scorenorm.run(&gathered, d);
         let mut x = self.score1.run(&x, threads);
-        for v in &mut x {
-            *v = tensor::gelu(*v)
-        }
+        tensor::gelu_inplace(&mut x);
         let logits = self.score2.run(&x, threads);
         let p = tensor::softmax(&logits);
         let top1 = p.iter().copied().fold(0., f32::max);
@@ -390,9 +390,7 @@ impl Model {
         let mut pooled = h[..d].to_vec();
         pooled.extend_from_slice(&[top1, top1 - top2, ent, k / 255.]);
         let mut x = self.act1.run(&pooled, threads);
-        for v in &mut x {
-            *v = tensor::gelu(*v)
-        }
+        tensor::gelu_inplace(&mut x);
         let act = self.act2.run(&x, threads);
         if logits.iter().chain(&act).any(|x| !x.is_finite()) {
             return Err("non-finite model output".into());
