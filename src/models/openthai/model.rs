@@ -51,15 +51,11 @@ pub struct Model {
     pub temperature: Vec<f32>,
 }
 fn matrix(g: &Gguf, key: &str, rows: usize, cols: usize) -> Result<Matrix, String> {
-    let (t, _) = g.data(key)?;
+    let (t, bytes) = g.data(key)?;
     if t.dims != [cols, rows] {
         return Err(format!("{key}: unexpected matrix shape"));
     }
-    Ok(Matrix {
-        cols,
-        rows,
-        data: g.floats(key)?,
-    })
+    Matrix::new(t.kind, bytes, rows, cols)
 }
 fn vector(g: &Gguf, key: &str, n: usize) -> Result<Vec<f32>, String> {
     let (t, _) = g.data(key)?;

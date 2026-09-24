@@ -67,7 +67,7 @@ fn name<'a>(graph: &'a J, id: &J) -> &'a str {
 }
 fn linear(g: &Gguf, graph: &J, key: &str) -> Result<Linear, String> {
     let weight = format!("{key}.weight");
-    let (t, _) = g.data(&weight)?;
+    let (t, bytes) = g.data(&weight)?;
     let cols = t.dims[0];
     let rows = *t.dims.get(1).unwrap_or(&1);
     if t.dims.iter().skip(2).any(|&d| d != 1) {
@@ -111,11 +111,7 @@ fn linear(g: &Gguf, graph: &J, key: &str) -> Result<Linear, String> {
         Some(out)
     };
     Ok(Linear {
-        w: Matrix {
-            cols,
-            rows,
-            data: g.floats(&weight)?,
-        },
+        w: Matrix::new(t.kind, bytes, rows, cols)?,
         b,
     })
 }
@@ -151,15 +147,7 @@ fn norm(g: &Gguf, graph: &J, i: usize) -> Result<Norm, String> {
 }
 impl Model {
     pub fn new(g: Gguf, threads: usize) -> Result<Self, String> {
-        // These kernels require AVX2/FMA; fail explicitly on other CPUs.
-        let f = core::arch::x86_64::__cpuid(1);
-        let f7 = core::arch::x86_64::__cpuid_count(7, 0);
-        if f.ecx & (1 << 12) == 0 || f.ecx & (1 << 27) == 0 || f7.ebx & (1 << 5) == 0 {
-            return Err("CPU requires AVX2, FMA and OSXSAVE".into());
-        }
-        if unsafe { core::arch::x86_64::_xgetbv(0) } & 6 != 6 {
-            return Err("OS has not enabled AVX state".into());
-        }
+        tensor::require_simd()?;
         if g.get("general.architecture").str() != "ggmlc"
             || !g.get("laya.checkpoint").str().contains("laya")
         {
@@ -261,16 +249,13 @@ impl Model {
                 }
             }
         }
+        let (et_tensor, et_bytes) = g.data("tok_emb.weight")?;
         let out = Self {
             layers,
             d,
             hd,
             threads,
-            emb: Matrix {
-                cols: d,
-                rows: vocab,
-                data: g.floats("tok_emb.weight")?,
-            },
+            emb: Matrix::new(et_tensor.kind, et_bytes, vocab, d)?,
             embnorm: norm(&g, &graph, 0)?,
             finalnorm: norm(&g, &graph, 2 * layers)?,
             trunk,
@@ -334,7 +319,7 @@ impl Model {
             if id >= self.emb.rows {
                 return Err("token ID out of range".into());
             }
-            h.extend_from_slice(&self.emb.data[id * d..(id + 1) * d])
+            h.extend(self.emb.row(id));
         }
         h = self.embnorm.run(&h, d);
         for l in &self.trunk {
