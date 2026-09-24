@@ -1,0 +1,294 @@
+{
+  "bench_version": 1,
+  "correctness": {
+    "max_abs_err": 0.00115966796875,
+    "max_rel_err": 2.0117978177076113e-6,
+    "pass": true,
+    "shape": {
+      "k": 1024,
+      "m": 8,
+      "n": 3072
+    }
+  },
+  "device": {
+    "analytic_f32_tflops": 0.5952,
+    "compute_units": 24,
+    "fp16": true,
+    "max_clock_mhz": 1550,
+    "max_mem_alloc_mb": 1073.741824,
+    "name": "Intel(R) Graphics [0x4682]"
+  },
+  "kernel": "tiled 16x16 local, KC=64, float4/half4 aligned cooperative tiles, F16 storage / F32 accumulate, sequential k",
+  "notes": [
+    "projection adds a flat 5 ms for attention/norms/elementwise/launch overhead (CUDA sidecar measured ~3 ms at ~300 launches; OpenCL per-launch cost is comparable or higher)",
+    "event profiling timestamps mis-scale under WSL2/dxg — clean wall-clock loops are the authoritative numbers; event_* fields are informational only",
+    "win condition: projected_forward_ms <= 84.6 ms (2x the 169.2 ms 16-thread CPU baseline on this host)",
+    "iterating the same matmul weights back-to-back as measured here is a best case for DDR3-style caches; a real forward streams 842 MB of weights between layers, so treat results as an upper bound on throughput"
+  ],
+  "results": [
+    {
+      "cpu_baseline_ms": 169.2,
+      "forward_gflop": 29.54887168,
+      "m_tokens": 40,
+      "matmul_ms_clean_wall": 425.5192277058823,
+      "meets_2x": false,
+      "projected_forward_ms": 430.5192277058823,
+      "shapes": [
+        {
+          "clean_wall_us": 3572.745,
+          "count": 30,
+          "event_min_us": 5.844,
+          "event_p50_us": 18.847,
+          "k": 1024,
+          "n": 3072,
+          "tflops_clean_wall": 0.07043834362653927
+        },
+        {
+          "clean_wall_us": 1167.431,
+          "count": 31,
+          "event_min_us": 2.541,
+          "event_p50_us": 6.099,
+          "k": 1024,
+          "n": 1024,
+          "tflops_clean_wall": 0.07185527881305191
+        },
+        {
+          "clean_wall_us": 6367.975794117647,
+          "count": 28,
+          "event_min_us": 3.925,
+          "event_p50_us": 15.039,
+          "k": 1024,
+          "n": 5248,
+          "tflops_clean_wall": 0.06751221642474375
+        },
+        {
+          "clean_wall_us": 3014.4801470588236,
+          "count": 28,
+          "event_min_us": 2.989,
+          "event_p50_us": 14.101,
+          "k": 2624,
+          "n": 1024,
+          "tflops_clean_wall": 0.07130850744189869
+        },
+        {
+          "clean_wall_us": 4875.52994117647,
+          "count": 2,
+          "event_min_us": 12.874,
+          "event_p50_us": 16.959,
+          "k": 1024,
+          "n": 4096,
+          "tflops_clean_wall": 0.06882212273298702
+        },
+        {
+          "clean_wall_us": 4843.345235294117,
+          "count": 2,
+          "event_min_us": 11.766,
+          "event_p50_us": 15.625,
+          "k": 4096,
+          "n": 1024,
+          "tflops_clean_wall": 0.0692794553555346
+        }
+      ],
+      "speedup_vs_cpu": 0.39301380544980513,
+      "weight_bytes_mb": 738.721792
+    },
+    {
+      "cpu_baseline_ms": 169.2,
+      "forward_gflop": 47.278194688,
+      "m_tokens": 64,
+      "matmul_ms_clean_wall": 618.352500382353,
+      "meets_2x": false,
+      "projected_forward_ms": 623.352500382353,
+      "shapes": [
+        {
+          "clean_wall_us": 5213.753823529412,
+          "count": 30,
+          "event_min_us": 6.956,
+          "event_p50_us": 14.056,
+          "k": 1024,
+          "n": 3072,
+          "tflops_clean_wall": 0.07722903643490918
+        },
+        {
+          "clean_wall_us": 1701.3819705882354,
+          "count": 31,
+          "event_min_us": 6.707,
+          "event_p50_us": 12.645,
+          "k": 1024,
+          "n": 1024,
+          "tflops_clean_wall": 0.0788874751938247
+        },
+        {
+          "clean_wall_us": 9118.778852941176,
+          "count": 28,
+          "event_min_us": 17.352,
+          "event_p50_us": 19.891,
+          "k": 1024,
+          "n": 5248,
+          "tflops_clean_wall": 0.07543398815710235
+        },
+        {
+          "clean_wall_us": 4482.075235294118,
+          "count": 28,
+          "event_min_us": 10.259,
+          "event_p50_us": 22.226,
+          "k": 2624,
+          "n": 1024,
+          "tflops_clean_wall": 0.07673519741295255
+        },
+        {
+          "clean_wall_us": 7055.853235294118,
+          "count": 2,
+          "event_min_us": 11.755,
+          "event_p50_us": 18.593,
+          "k": 1024,
+          "n": 4096,
+          "tflops_clean_wall": 0.07608873003686009
+        },
+        {
+          "clean_wall_us": 7130.711823529411,
+          "count": 2,
+          "event_min_us": 8.661,
+          "event_p50_us": 19.935,
+          "k": 4096,
+          "n": 1024,
+          "tflops_clean_wall": 0.07528994654200888
+        }
+      ],
+      "speedup_vs_cpu": 0.27143550382202014,
+      "weight_bytes_mb": 738.721792
+    },
+    {
+      "cpu_baseline_ms": 169.2,
+      "forward_gflop": 94.556389376,
+      "m_tokens": 128,
+      "matmul_ms_clean_wall": 1237.2448865294116,
+      "meets_2x": false,
+      "projected_forward_ms": 1242.2448865294116,
+      "shapes": [
+        {
+          "clean_wall_us": 10469.867588235295,
+          "count": 30,
+          "event_min_us": 7.668,
+          "event_p50_us": 20.959,
+          "k": 1024,
+          "n": 3072,
+          "tflops_clean_wall": 0.07691657618525194
+        },
+        {
+          "clean_wall_us": 3396.865588235294,
+          "count": 31,
+          "event_min_us": 3.322,
+          "event_p50_us": 12.07,
+          "k": 1024,
+          "n": 1024,
+          "tflops_clean_wall": 0.07902445623097348
+        },
+        {
+          "clean_wall_us": 18194.04232352941,
+          "count": 28,
+          "event_min_us": 15.978,
+          "event_p50_us": 21.029,
+          "k": 1024,
+          "n": 5248,
+          "tflops_clean_wall": 0.07561440649287912
+        },
+        {
+          "clean_wall_us": 8983.225970588235,
+          "count": 28,
+          "event_min_us": 19.878,
+          "event_p50_us": 24.573,
+          "k": 2624,
+          "n": 1024,
+          "tflops_clean_wall": 0.07657225347020381
+        },
+        {
+          "clean_wall_us": 14169.120735294116,
+          "count": 2,
+          "event_min_us": 12.609,
+          "event_p50_us": 21.291,
+          "k": 1024,
+          "n": 4096,
+          "tflops_clean_wall": 0.07578041319990994
+        },
+        {
+          "clean_wall_us": 14272.135970588235,
+          "count": 2,
+          "event_min_us": 16.547,
+          "event_p50_us": 20.832,
+          "k": 4096,
+          "n": 1024,
+          "tflops_clean_wall": 0.07523343571086683
+        }
+      ],
+      "speedup_vs_cpu": 0.1362050283601582,
+      "weight_bytes_mb": 738.721792
+    },
+    {
+      "cpu_baseline_ms": 169.2,
+      "forward_gflop": 189.112778752,
+      "m_tokens": 256,
+      "matmul_ms_clean_wall": 2490.4154390294116,
+      "meets_2x": false,
+      "projected_forward_ms": 2495.4154390294116,
+      "shapes": [
+        {
+          "clean_wall_us": 21044.183235294116,
+          "count": 30,
+          "event_min_us": 19.853,
+          "event_p50_us": 20.791,
+          "k": 1024,
+          "n": 3072,
+          "tflops_clean_wall": 0.07653481810112597
+        },
+        {
+          "clean_wall_us": 6906.4621470588245,
+          "count": 31,
+          "event_min_us": 15.941,
+          "event_p50_us": 21.722,
+          "k": 1024,
+          "n": 1024,
+          "tflops_clean_wall": 0.07773457677294751
+        },
+        {
+          "clean_wall_us": 36765.14388235294,
+          "count": 28,
+          "event_min_us": 19.071,
+          "event_p50_us": 20.805,
+          "k": 1024,
+          "n": 5248,
+          "tflops_clean_wall": 0.07483891353191974
+        },
+        {
+          "clean_wall_us": 17895.426176470588,
+          "count": 28,
+          "event_min_us": 20.651,
+          "event_p50_us": 21.809,
+          "k": 2624,
+          "n": 1024,
+          "tflops_clean_wall": 0.07687616368750418
+        },
+        {
+          "clean_wall_us": 28369.91920588235,
+          "count": 2,
+          "event_min_us": 19.072,
+          "event_p50_us": 22.274,
+          "k": 1024,
+          "n": 4096,
+          "tflops_clean_wall": 0.07569579710169674
+        },
+        {
+          "clean_wall_us": 28876.90767647059,
+          "count": 2,
+          "event_min_us": 19.251,
+          "event_p50_us": 20.946,
+          "k": 4096,
+          "n": 1024,
+          "tflops_clean_wall": 0.07436681489790568
+        }
+      ],
+      "speedup_vs_cpu": 0.06780434125462095,
+      "weight_bytes_mb": 738.721792
+    }
+  ]
+}
