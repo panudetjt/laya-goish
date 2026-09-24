@@ -17,6 +17,11 @@ path = "src/main.rs"
 name = "igpu-probe"
 path = "src/igpu_probe.rs"
 
+# iGPU bench: F16-storage matmul microbench on the engine's real shapes
+[[bin]]
+name = "igpu-bench"
+path = "src/igpu_bench.rs"
+
 [dependencies.ash]
 version = "0.38"
 features = ["loaded"]
