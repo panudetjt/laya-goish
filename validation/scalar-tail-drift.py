@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-"""Measure decision drift between two engine binaries (ticket 05 scalar-tail round).
+"""Verify zero-drift: decision outputs must be bit-identical between two engine binaries.
 
 Usage: scalar-tail-drift.py OLD_BIN NEW_BIN F16_LAYA F16_OPENTHAI [EXAMPLES_DIR]
 
-Gates declared in .scratch/acceleration/issues/05-cpu-scalar-tail.md before
-measuring: OpenThai outputs byte-identical to the old binary (conv1d channel
-partitioning is bit-exact) except `usage`; Laya outputs (polynomial GELU +
-SIMD norm reductions) within 5e-4 on every reported probability, confidence,
-score, and entropy, with zero discrete flips (choice strings, booleans).
-Exits non-zero on any breach.
+Posture (user mandate, 2026-09-24): optimizations may only change latency and
+RAM — accuracy must be unaffected, so both models' full decision JSON must be
+byte-identical to the pre-change binary (only the `usage` timing block is
+excluded) across the 6-case reference set and thread counts 1/2/4/5/7/12/16.
+Exits non-zero on any difference.
 """
 import json
 import subprocess
@@ -20,7 +19,6 @@ CASES = {
     "openthai": ["refund", "openthai-thai", "openthai-mixed"],
 }
 THREADS = [1, 2, 4, 5, 7, 12, 16]
-PROB_GATE = 5e-4
 
 
 def decide(binary, model, request_path, threads):
@@ -39,17 +37,6 @@ def strip_usage(obj):
     return obj
 
 
-def flat(o, path=""):
-    if isinstance(o, dict):
-        for k, v in o.items():
-            yield from flat(v, f"{path}.{k}")
-    elif isinstance(o, list):
-        for i, v in enumerate(o):
-            yield from flat(v, f"{path}[{i}]")
-    else:
-        yield path, o
-
-
 def main():
     if len(sys.argv) < 5:
         raise SystemExit(__doc__)
@@ -57,42 +44,22 @@ def main():
     examples = sys.argv[5] if len(sys.argv) > 5 else "examples"
     models = {"laya": laya, "openthai": openthai}
     breaches = []
-    worst = (0.0, "")
+    checked = 0
     for name in ["laya", "openthai"]:
         for req in CASES[name]:
             path = os.path.join(examples, f"{req}.json")
             for t in THREADS:
-                a = decide(old, models[name], path, t)
-                b = decide(new, models[name], path, t)
-                sa, sb = strip_usage(json.loads(a)), strip_usage(json.loads(b))
-                if json.dumps(sa, sort_keys=True) != json.dumps(sb, sort_keys=True):
-                    if name == "openthai":
-                        breaches.append(f"openthai/{req}@{t}t: NOT bit-identical")
-                        continue
-                    da, db = dict(flat(sa)), dict(flat(sb))
-                    if set(da) != set(db):
-                        breaches.append(f"laya/{req}@{t}t: field set changed")
-                        continue
-                    for k in da:
-                        va, vb = da[k], db[k]
-                        if isinstance(va, str) or isinstance(va, bool) or va is None:
-                            if va != vb:
-                                breaches.append(f"laya/{req}@{t}t: discrete flip {k}: {va} -> {vb}")
-                        elif isinstance(va, (int, float)):
-                            if ("probabilit" in k or k.endswith((".noul", ".confidence", ".score", ".entropy"))):
-                                d = abs(float(va) - float(vb))
-                                if d > worst[0]:
-                                    worst = (d, f"laya/{req}@{t}t{k}")
-                            elif float(va) != float(vb):
-                                breaches.append(f"laya/{req}@{t}t: non-gated numeric changed {k}: {va} -> {vb}")
-    if worst[0] > PROB_GATE:
-        breaches.append(f"probability delta {worst[0]:.6f} > {PROB_GATE} at {worst[1]}")
-    print(f"max gated |delta| = {worst[0]:.6f} ({worst[1] or 'n/a'}), gate {PROB_GATE}")
+                a = strip_usage(json.loads(decide(old, models[name], path, t)))
+                b = strip_usage(json.loads(decide(new, models[name], path, t)))
+                checked += 1
+                if json.dumps(a, sort_keys=True) != json.dumps(b, sort_keys=True):
+                    breaches.append(f"{name}/{req}@{t}t: NOT bit-identical")
+    print(f"checked {checked} case/thread combinations")
     if breaches:
         for b in breaches:
             print(f"BREACH: {b}")
         raise SystemExit(1)
-    print("scalar-tail drift: PASS (OpenThai bit-identical, Laya within gates)")
+    print("zero-drift: PASS (both models bit-identical on every case and thread count)")
 
 
 if __name__ == "__main__":

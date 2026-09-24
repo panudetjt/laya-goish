@@ -5,9 +5,11 @@ use crate::{
 };
 use alloc::{
     string::{String, ToString},
+    sync::Arc,
     vec,
     vec::Vec,
 };
+use goish::{go, sync::WaitGroup};
 struct Linear {
     w: Matrix,
     b: Option<Vec<f32>>,
@@ -35,6 +37,19 @@ struct Layer {
     wi: Linear,
     down: Linear,
     full: bool,
+}
+// GeGLU over flattened output elements [k0, k1). Workers own disjoint
+// element ranges; each element computes the original serial expression
+// (scalar gelu included) on the same operands, so outputs are
+// bit-identical. Inputs live through the caller's Wait(); no pointer escapes.
+fn geglu_span(upp: usize, mp: usize, n: usize, f: usize, k0: usize, k1: usize) {
+    let up = unsafe { core::slice::from_raw_parts(upp as *const f32, n * 2) };
+    let m = unsafe { core::slice::from_raw_parts_mut(mp as *mut f32, n) };
+    for k in k0..k1 {
+        let i = k / f;
+        let j = k - i * f;
+        m[k] = tensor::gelu(up[i * 2 * f + j]) * up[i * 2 * f + f + j];
+    }
 }
 pub struct Model {
     pub g: Gguf,
@@ -347,12 +362,27 @@ impl Model {
             let up = l.wi.run(&n, threads);
             let f = l.down.w.cols;
             let mut m = vec![0.; s * f];
-            for i in 0..s {
-                tensor::gelu_mul(
-                    &up[i * 2 * f..i * 2 * f + f],
-                    &up[i * 2 * f + f..(i + 1) * 2 * f],
-                    &mut m[i * f..(i + 1) * f],
-                );
+            {
+                let n = s * f;
+                let upp = up.as_ptr() as usize;
+                let mp = m.as_mut_ptr() as usize;
+                let count = threads.min(n).max(1);
+                let per = n.div_ceil(count);
+                let wg = Arc::new(WaitGroup::new());
+                wg.Add((count - 1) as i64);
+                for t in 1..count {
+                    let wg = wg.clone();
+                    let k0 = (t * per).min(n);
+                    let k1 = ((t + 1) * per).min(n);
+                    go!(move || {
+                        if k1 > k0 {
+                            geglu_span(upp, mp, n, f, k0, k1);
+                        }
+                        wg.Done();
+                    });
+                }
+                geglu_span(upp, mp, n, f, 0, per.min(n));
+                wg.Wait();
             }
             tensor::add(&mut h, &l.down.run(&m, threads));
         }
@@ -377,7 +407,9 @@ impl Model {
         }
         let x = self.scorenorm.run(&gathered, d);
         let mut x = self.score1.run(&x, threads);
-        tensor::gelu_inplace(&mut x);
+        for v in &mut x {
+            *v = tensor::gelu(*v)
+        }
         let logits = self.score2.run(&x, threads);
         let p = tensor::softmax(&logits);
         let top1 = p.iter().copied().fold(0., f32::max);
@@ -390,7 +422,9 @@ impl Model {
         let mut pooled = h[..d].to_vec();
         pooled.extend_from_slice(&[top1, top1 - top2, ent, k / 255.]);
         let mut x = self.act1.run(&pooled, threads);
-        tensor::gelu_inplace(&mut x);
+        for v in &mut x {
+            *v = tensor::gelu(*v)
+        }
         let act = self.act2.run(&x, threads);
         if logits.iter().chain(&act).any(|x| !x.is_finite()) {
             return Err("non-finite model output".into());

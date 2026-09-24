@@ -308,64 +308,71 @@ Requires AVX2/FMA/F16C (checked at startup with a clear error on unsupported CPU
 
 ---
 
-## 8. Scalar-tail round (2026-09-24, ticket 05)
+## 8. Scalar-tail round (2026-09-24, tickets 05 + zero-drift revision)
 
 Same machine and harness (1 warm-up + 8 measured, `usage.latency_ms`), baseline re-measured in
 the same session for fairness (§7 recorded numbers shown as the hard gates).
 
 ### 8.1 What changed
 
-1. **GELU vectorization (Laya)**: `libm::tanhf` per element replaced by 8-wide AVX2+FMA with
-   tanh = 1 − 2/(e^{2t}+1) and an in-house degree-6 least-squares `e^r` fit (max rel err 1.8e-8).
-   NOT bit-identical — drift-gated.
-2. **Layer-norm SIMD reductions (Laya)**: mean/var as 8-lane partial sums plus a vectorized
-   affine, one `target_feature` kernel. NOT bit-identical — drift-gated.
+1. **GeGLU parallelism (Laya)**: the gated-GELU loop runs across workers owning disjoint
+   flattened element ranges; each element computes the original serial expression (scalar libm
+   tanh included) on the same operands — **bit-identical**.
+2. **Layer-norm affine vectorization (Laya)**: mean/var keep the original sequential summation
+   order; only the elementwise affine (sub, mul, mul, add — no reassociation, no fused
+   contraction) is vectorized in one AVX2 `target_feature` kernel — **bit-identical** (self-test
+   asserts to_bits equality).
 3. **conv1d+SiLU channel parallelism (OpenThai)**: the previously single-threaded 6144-channel
    loop now runs across workers owning disjoint channel ranges; per-element tap order and scalar
    silu unchanged — **bit-identical**.
 
+History: a first pass (`561cb3d`) shipped polynomial-tanh GELU and SIMD norm reductions with a
+declared ≤5e-4 drift gate (measured max 1e-6). It was revised per the project's standing
+zero-drift mandate — accuracy must never move, only latency and RAM — replacing both with the
+bit-exact techniques above at a ~20 ms cost on Laya 16T.
+
 Dropped with rationale (profile-recorded, ticket 05): OpenThai rms vectorization (10 ms total,
 reduction already SIMD), OpenThai softmax/rope/z-silu/sigmoid expf work (each sub-noise, and it
-would break OpenThai's bit-identical posture), request batching (matmul is now 58–72% of a
-request, but batching needs concurrent load, which has never been measured).
+would break bit-identity), request batching (matmul is 58–72% of a request, but batching needs
+concurrent load, which has never been measured).
 
 ### 8.2 Latency
 
 | Config | §7 | Baseline (today) | Final | Δ vs §7 |
 |---|:---:|:---:|:---:|:---:|
-| **Laya F16 16T** | 205.0 | 218.9 | **152.3 ms** | **−26%** |
-| Laya F16 12T | 220.9 | 205.1 | 170.8 | −23% |
-| Laya F16 4T | — | 287.4 | 204.8 | — |
-| OpenThai F16 12T | 870.6 | 874.1 | **788.9 ms** | −9.4% |
+| Laya F16 16T | 205.0 | 218.9 | **172.3 ms** | **−16%** |
+| Laya F16 12T | 220.9 | 205.1 | **163.6 ms** | −26% (best Laya config) |
+| Laya F16 4T | — | 287.4 | 215.8 | — |
+| OpenThai F16 12T | 870.6 | 874.1 | **788.9–816 ms** | −7..−9% |
 | OpenThai F16 16T | 905.4 | 884.9 | 792.0 | −13% |
-| Laya Q8_0 16T / 12T | 214.0 / 221.5 | 214.0 / 201.1 | 155.1 / 158.0 | −28% / −29% |
+| Laya Q8_0 16T / 12T | 214.0 / 221.5 | 214.0 / 201.1 | 161.1 / 157.9 | −25% / −29% |
 | OpenThai Q8_0 16T / 12T | 915.9 / 934.5 | 916.9 / 891.4 | 838.3 / 835.1 | −8.5% / −11% |
 
 OpenThai's 12T gain is bounded by E-core stragglers in the conv parallel section (no thread
-affinity in Goish; conv 137.3 → 23.8 ms = 5.8× instead of the ideal ~12×).
+affinity in Goish; conv 137.3 → 23.8 ms = 5.8× instead of the ideal ~12×). For the same reason
+Laya's per-layer GeGLU join favors 12T over 16T.
 
-### 8.3 Determinism
+### 8.3 Determinism — zero drift, both models
 
-- **OpenThai F16 stays bit-identical** through this round: full decision JSON byte-equal to the
-  pre-change binary on all reference requests at thread counts 1/2/4/5/7/12/16.
-- **Laya F16 drifts by max 1e-6** on every reported probability/confidence/score (declared gate
-  5e-4, the same value the `dot` vectorization used in §7.1; measured drift is the same order,
-  9.2e-7 then, 1e-6 now). Zero discrete flips. The gates are executable:
-  `validation/scalar-tail-drift.py OLD_BIN NEW_BIN <laya.gguf> <openthai.gguf> [examples]`.
-- `laya self-test` now also asserts the GELU/norm kernels against their scalar references over a
-  60k-point grid; `validation/smoke.py` and `validation/quantized-drift.py` (Q8_0 maxima
-  unchanged: 0.01782 / 0.01811) pass.
+- **Both models stay bit-identical** through this round: full decision JSON byte-equal to the
+  pre-round binary across the 6-case reference set at thread counts 1/2/4/5/7/12/16 (42
+  combinations). The gate is executable:
+  `validation/scalar-tail-drift.py OLD_BIN NEW_BIN <laya.gguf> <openthai.gguf> [examples]` —
+  exits non-zero on any difference.
+- `laya self-test` asserts layer-norm to_bits equality against the scalar textbook form;
+  `validation/smoke.py` and `validation/quantized-drift.py` pass, and the Q8_0 maxima are
+  unchanged from §7 (0.01782 / 0.01811), confirming the F16 reference path is bit-exact.
 
 ### 8.4 Recommended operations (updated)
 
 ```bash
-# Laya English: ~152 ms per request
-./laya serve models/laya_english_f16.gguf --host 127.0.0.1 --port 8080 --threads 16
+# Laya English: ~164 ms per request (12T is now the fastest bit-exact config)
+./laya serve models/laya_english_f16.gguf --host 127.0.0.1 --port 8080 --threads 12
 
 # OpenThai: ~0.79 s per Thai decision
 ./laya serve models/openthai_systemone_v03_f16.gguf --host 127.0.0.1 --port 8081 --threads 12
 
 # Memory-constrained deployments: Q8_0 variants, equal speed, ~half the RAM
-./laya serve models/laya_english_q8_0.gguf --port 8080 --threads 16
+./laya serve models/laya_english_q8_0.gguf --port 8080 --threads 12
 ./laya serve models/openthai_systemone_v03_q8_0.gguf --port 8081 --threads 12
 ```

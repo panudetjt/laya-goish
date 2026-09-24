@@ -282,9 +282,11 @@ pub fn norm(x: &[f32], d: usize, w: Option<&[f32]>, b: Option<&[f32]>, eps: f32)
     }
     y
 }
-// Eight reassociated partial sums per reduction; adoption was gated
-// on measured drift against reference outputs (ticket 05). Reductions and
-// affine share one target_feature kernel so intrinsics stay in YMM registers.
+// Outputs must stay bit-identical to the scalar textbook form: mean/var
+// reductions keep sequential summation order, and the affine is elementwise
+// (sub, mul, mul, add — no reassociation, no fused contraction). Reductions
+// and affine share one target_feature kernel so intrinsics stay in YMM
+// registers (splitting the kernel doubled its measured cost).
 #[inline(never)]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn norm_chunk(
@@ -295,8 +297,15 @@ unsafe fn norm_chunk(
     eps: f32,
 ) {
     let d = a.len();
-    let mean = sum8(a) / d as f32;
-    let var = sqsum8(a, mean) / d as f32;
+    let mean = a.iter().sum::<f32>() / d as f32;
+    let var = a
+        .iter()
+        .map(|v| {
+            let z = v - mean;
+            z * z
+        })
+        .sum::<f32>()
+        / d as f32;
     let scale = 1. / libm::sqrtf(var + eps);
     let m = _mm256_set1_ps(mean);
     let sv = _mm256_set1_ps(scale);
@@ -317,46 +326,6 @@ unsafe fn norm_chunk(
         j += 1;
     }
 }
-// Sequential-lane horizontal sum, same order as dot_kernel.
-#[inline(never)]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn sum8(x: &[f32]) -> f32 {
-    let mut acc = _mm256_setzero_ps();
-    let mut i = 0;
-    while i + 8 <= x.len() {
-        acc = _mm256_add_ps(acc, _mm256_loadu_ps(x[i..].as_ptr()));
-        i += 8;
-    }
-    let mut lanes = [0f32; 8];
-    _mm256_storeu_ps(lanes.as_mut_ptr(), acc);
-    let mut s = lanes.iter().sum::<f32>();
-    while i < x.len() {
-        s += x[i];
-        i += 1;
-    }
-    s
-}
-#[inline(never)]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn sqsum8(x: &[f32], mean: f32) -> f32 {
-    let m = _mm256_set1_ps(mean);
-    let mut acc = _mm256_setzero_ps();
-    let mut i = 0;
-    while i + 8 <= x.len() {
-        let v = _mm256_sub_ps(_mm256_loadu_ps(x[i..].as_ptr()), m);
-        acc = _mm256_fmadd_ps(v, v, acc);
-        i += 8;
-    }
-    let mut lanes = [0f32; 8];
-    _mm256_storeu_ps(lanes.as_mut_ptr(), acc);
-    let mut s = lanes.iter().sum::<f32>();
-    while i < x.len() {
-        let v = x[i] - mean;
-        s += v * v;
-        i += 1;
-    }
-    s
-}
 pub fn add(x: &mut [f32], y: &[f32]) {
     assert_eq!(x.len(), y.len());
     for (a, b) in x.iter_mut().zip(y) {
@@ -365,90 +334,6 @@ pub fn add(x: &mut [f32], y: &[f32]) {
 }
 pub fn gelu(x: f32) -> f32 {
     0.5 * x * (1. + libm::tanhf(0.7978845608028654 * x * (1. + 0.044715 * x * x)))
-}
-// tanh via 1 - 2/(e^{2t}+1); e^u = 2^n * p(u - n*ln2) with a degree-6
-// least-squares fit for e^r on [-ln2/2, ln2/2] (max rel err 1.8e-8, f32
-// coefficients). Argument clamped to +-87 so 2^n stays normal-range.
-// Adoption was gated on measured drift against reference outputs (ticket 05).
-#[inline(never)]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn gelu8(v: __m256) -> __m256 {
-    let k = _mm256_set1_ps(0.044715);
-    let t = _mm256_mul_ps(
-        _mm256_set1_ps(0.7978845608028654),
-        _mm256_mul_ps(
-            v,
-            _mm256_add_ps(_mm256_set1_ps(1.), _mm256_mul_ps(k, _mm256_mul_ps(v, v))),
-        ),
-    );
-    let u = _mm256_mul_ps(_mm256_set1_ps(2.), _mm256_andnot_ps(_mm256_set1_ps(-0.), t));
-    let e = exp8(u);
-    let th = _mm256_sub_ps(
-        _mm256_set1_ps(1.),
-        _mm256_div_ps(_mm256_set1_ps(2.), _mm256_add_ps(e, _mm256_set1_ps(1.))),
-    );
-    let tanh = _mm256_or_ps(_mm256_and_ps(t, _mm256_set1_ps(-0.)), th);
-    _mm256_mul_ps(
-        _mm256_mul_ps(_mm256_set1_ps(0.5), v),
-        _mm256_add_ps(_mm256_set1_ps(1.), tanh),
-    )
-}
-#[inline(never)]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn exp8(u: __m256) -> __m256 {
-    let u = _mm256_min_ps(_mm256_max_ps(u, _mm256_set1_ps(-87.)), _mm256_set1_ps(87.));
-    let n = _mm256_cvtps_epi32(_mm256_mul_ps(u, _mm256_set1_ps(1.4426950408889634)));
-    let nf = _mm256_cvtepi32_ps(n);
-    let ln2hi = _mm256_set1_ps(0.693359375);
-    let ln2lo = _mm256_set1_ps(-2.12194440e-4);
-    let r = _mm256_sub_ps(
-        _mm256_sub_ps(u, _mm256_mul_ps(nf, ln2hi)),
-        _mm256_mul_ps(nf, ln2lo),
-    );
-    let p = _mm256_set1_ps(1.394473249e-3);
-    let p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(8.372004144e-3));
-    let p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(4.166627675e-2));
-    let p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(1.666645557e-1));
-    let p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(5e-1));
-    let p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(1.));
-    let p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(1.));
-    let scale = _mm256_castsi256_ps(_mm256_slli_epi32(
-        _mm256_add_epi32(n, _mm256_set1_epi32(127)),
-        23,
-    ));
-    _mm256_mul_ps(p, scale)
-}
-pub fn gelu_inplace(x: &mut [f32]) {
-    let mut i = 0;
-    while i + 8 <= x.len() {
-        unsafe {
-            let v = _mm256_loadu_ps(x[i..].as_ptr());
-            _mm256_storeu_ps(x[i..].as_mut_ptr(), gelu8(v));
-        }
-        i += 8;
-    }
-    while i < x.len() {
-        x[i] = gelu(x[i]);
-        i += 1;
-    }
-}
-pub fn gelu_mul(u: &[f32], v: &[f32], out: &mut [f32]) {
-    assert_eq!(u.len(), v.len());
-    assert_eq!(u.len(), out.len());
-    let mut i = 0;
-    while i + 8 <= u.len() {
-        unsafe {
-            let a = _mm256_loadu_ps(u[i..].as_ptr());
-            let b = _mm256_loadu_ps(v[i..].as_ptr());
-            let g = gelu8(a);
-            _mm256_storeu_ps(out[i..].as_mut_ptr(), _mm256_mul_ps(g, b));
-        }
-        i += 8;
-    }
-    while i < u.len() {
-        out[i] = gelu(u[i]) * v[i];
-        i += 1;
-    }
 }
 pub fn softmax(x: &[f32]) -> Vec<f32> {
     let m = x.iter().copied().fold(f32::NEG_INFINITY, f32::max);
@@ -644,45 +529,15 @@ pub fn self_test() -> Result<(), String> {
     if (crate::gguf::half(0x3c00) - 1.).abs() > 1e-8 || crate::gguf::half(1) != 1. / 16777216. {
         return Err("half conversion mismatch".into());
     }
-    // Vectorized GELU (polynomial expf) must track the scalar libm tanh
-    // reference within the drift budget declared in ticket 05: 1e-5 per
-    // element over a dense grid including the saturating tails.
-    let mut buf: Vec<f32> = Vec::new();
-    let mut i = -30000;
-    while i <= 30000 {
-        buf.push(i as f32 / 1000.);
-        i += 1;
-    }
-    buf.push(-100.);
-    buf.push(100.);
-    let grid = buf.clone();
-    let want: Vec<f32> = buf.iter().copied().map(gelu).collect();
-    gelu_inplace(&mut buf);
-    let worst = buf.iter().zip(&want).fold(0f32, |a, (x, y)| a.max((x - y).abs()));
-    if worst > 1e-5 {
-        return Err(format!("gelu kernel drift {worst} > 1e-5 vs scalar reference"));
-    }
-    let y: Vec<f32> = (0..buf.len()).map(|j| ((j % 17) as f32 - 8.) / 8.).collect();
-    let mut z = vec![0.; buf.len()];
-    gelu_mul(&grid, &y, &mut z);
-    for j in 0..buf.len() {
-        let expect = buf[j] * y[j];
-        if (z[j] - expect).abs() > 1e-6 {
-            return Err("gelu_mul mismatch vs gelu_inplace".into());
-        }
-    }
-    // SIMD layer norm must stay within 1e-5 of the textbook scalar form on
-    // widths that exercise lanes and tails (768 = Laya hidden, 17 odd), with
-    // and without affine parameters.
-    for (w, b) in [
-        (Some((0..768).map(|j| 1. + ((j % 7) as f32) / 49.).collect::<Vec<f32>>(),
-             (0..768).map(|j| ((j % 5) as f32 - 2.) / 64.).collect::<Vec<f32>>())),
-        (None, None),
-    ] {
+    // Layer norm must be BIT-identical to the textbook scalar form (zero
+    // drift is a hard requirement): widths exercise lanes and tails
+    // (768 = Laya hidden, 17 odd), with and without affine parameters.
+    let w768: Option<Vec<f32>> = Some((0..768).map(|j| 1. + ((j % 7) as f32) / 49.).collect());
+    let b768: Option<Vec<f32>> = Some((0..768).map(|j| ((j % 5) as f32 - 2.) / 64.).collect());
+    for (w, b) in [(w768, b768), (None, None)] {
         let d = if w.is_some() { 768 } else { 17 };
         let x: Vec<f32> = (0..d * 3).map(|j| ((j % 29) as f32 - 14.) / 13.).collect();
         let got = norm(&x, d, w.as_deref(), b.as_deref(), 1e-5);
-        let mut worst = 0f32;
         for c in 0..3 {
             let a = &x[c * d..(c + 1) * d];
             let mean = a.iter().sum::<f32>() / d as f32;
@@ -691,11 +546,10 @@ pub fn self_test() -> Result<(), String> {
             for j in 0..d {
                 let want = (a[j] - mean) * scale * w.as_deref().map(|w| w[j]).unwrap_or(1.)
                     + b.as_deref().map(|b| b[j]).unwrap_or(0.);
-                worst = worst.max((got[c * d + j] - want).abs());
+                if got[c * d + j].to_bits() != want.to_bits() {
+                    return Err("norm kernel is not bit-identical to scalar form".into());
+                }
             }
-        }
-        if worst > 1e-5 {
-            return Err(format!("norm kernel drift {worst} > 1e-5 vs scalar reference"));
         }
     }
     Ok(())
