@@ -5,7 +5,8 @@ use crate::{
     json::{self, J},
     tensor::{self, Matrix},
 };
-use alloc::{string::String, vec, vec::Vec};
+use alloc::{string::String, sync::Arc, vec, vec::Vec};
+use goish::{go, sync::WaitGroup};
 
 struct Full {
     q: Matrix,
@@ -75,6 +76,62 @@ fn softplus(x: f32) -> f32 {
         x
     } else {
         libm::log1pf(libm::expf(x))
+    }
+}
+// State is [key_dim, value_dim], maintained independently for each head.
+// Heads write disjoint 128-wide output ranges per token, so workers can run
+// heads in parallel; each head keeps its sequential token order, keeping the
+// result bit-identical to a single-threaded head loop. Inputs live through
+// the caller's Wait(); no pointer escapes.
+fn delta_head(
+    h: usize,
+    s: usize,
+    qkvp: usize,
+    ap: usize,
+    bp: usize,
+    alogp: usize,
+    dtp: usize,
+    outp: usize,
+) {
+    let qkv = unsafe { core::slice::from_raw_parts(qkvp as *const f32, s * 6144) };
+    let a = unsafe { core::slice::from_raw_parts(ap as *const f32, s * 16) };
+    let b = unsafe { core::slice::from_raw_parts(bp as *const f32, s * 16) };
+    let alog = unsafe { core::slice::from_raw_parts(alogp as *const f32, 16) };
+    let dt = unsafe { core::slice::from_raw_parts(dtp as *const f32, 16) };
+    let mut state = vec![0.; 128 * 128];
+    for i in 0..s {
+        let q = &qkv[i * 6144 + h * 128..][..128];
+        let k = &qkv[i * 6144 + 2048 + h * 128..][..128];
+        let v = &qkv[i * 6144 + 4096 + h * 128..][..128];
+        let qs = 1. / libm::sqrtf(tensor::dot(q, q) + 1e-6) / libm::sqrtf(128.);
+        let ks = 1. / libm::sqrtf(tensor::dot(k, k) + 1e-6);
+        let decay =
+            libm::expf(-libm::expf(alog[h]) * softplus(a[i * 16 + h] + dt[h]));
+        let beta = sigmoid(b[i * 16 + h]);
+        let mut delta = [0.; 128];
+        for v in state.iter_mut() {
+            *v *= decay;
+        }
+        for j in 0..128 {
+            let key = k[j] * ks;
+            for d in 0..128 {
+                delta[d] += state[j * 128 + d] * key;
+            }
+        }
+        for d in 0..128 {
+            delta[d] = (v[d] - delta[d]) * beta;
+        }
+        let o = unsafe {
+            core::slice::from_raw_parts_mut((outp + (i * 2048 + h * 128) * 4) as *mut f32, 128)
+        };
+        for j in 0..128 {
+            let key = k[j] * ks;
+            let query = q[j] * qs;
+            for d in 0..128 {
+                state[j * 128 + d] += key * delta[d];
+                o[d] += state[j * 128 + d] * query;
+            }
+        }
     }
 }
 fn rms(x: &[f32], w: &[f32], offset: f32) -> Vec<f32> {
@@ -314,42 +371,31 @@ impl Delta {
             }
         }
         let mut out = vec![0.; s * 2048];
-        // State is [key_dim, value_dim], maintained independently for each head.
-        for h in 0..16 {
-            let mut state = vec![0.; 128 * 128];
-            for i in 0..s {
-                let q = &qkv[i * 6144 + h * 128..][..128];
-                let k = &qkv[i * 6144 + 2048 + h * 128..][..128];
-                let v = &qkv[i * 6144 + 4096 + h * 128..][..128];
-                let qs = 1. / libm::sqrtf(tensor::dot(q, q) + 1e-6) / libm::sqrtf(128.);
-                let ks = 1. / libm::sqrtf(tensor::dot(k, k) + 1e-6);
-                let decay =
-                    libm::expf(-libm::expf(self.alog[h]) * softplus(a[i * 16 + h] + self.dt[h]));
-                let beta = sigmoid(b[i * 16 + h]);
-                let mut delta = [0.; 128];
-                for v in state.iter_mut() {
-                    *v *= decay;
+        let outp = out.as_mut_ptr() as usize;
+        let qkvp = qkv.as_ptr() as usize;
+        let ap = a.as_ptr() as usize;
+        let bp = b.as_ptr() as usize;
+        let alogp = self.alog.as_ptr() as usize;
+        let dtp = self.dt.as_ptr() as usize;
+        let count = threads.min(16).max(1);
+        let per = 16usize.div_ceil(count);
+        let wg = Arc::new(WaitGroup::new());
+        wg.Add((count - 1) as i64);
+        for t in 1..count {
+            let wg = wg.clone();
+            let h0 = (t * per).min(16);
+            let h1 = ((t + 1) * per).min(16);
+            go!(move || {
+                for h in h0..h1 {
+                    delta_head(h, s, qkvp, ap, bp, alogp, dtp, outp);
                 }
-                for j in 0..128 {
-                    let key = k[j] * ks;
-                    for d in 0..128 {
-                        delta[d] += state[j * 128 + d] * key;
-                    }
-                }
-                for d in 0..128 {
-                    delta[d] = (v[d] - delta[d]) * beta;
-                }
-                let o = &mut out[i * 2048 + h * 128..][..128];
-                for j in 0..128 {
-                    let key = k[j] * ks;
-                    let query = q[j] * qs;
-                    for d in 0..128 {
-                        state[j * 128 + d] += key * delta[d];
-                        o[d] += state[j * 128 + d] * query;
-                    }
-                }
-            }
+                wg.Done();
+            });
         }
+        for h in 0..per.min(16) {
+            delta_head(h, s, qkvp, ap, bp, alogp, dtp, outp);
+        }
+        wg.Wait();
         let mut out = rms(&out, &self.norm, 0.);
         for (o, z) in out.iter_mut().zip(z) {
             *o *= silu(z);

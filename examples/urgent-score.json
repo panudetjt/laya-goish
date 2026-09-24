@@ -1,0 +1,19 @@
+{
+  "state": "The payment gateway has been down for six hours and three enterprise customers are threatening to cancel their contracts unless this is fixed today. Escalating again because the first ticket got no response.",
+  "questions": {
+    "urgency": {
+      "type": "score",
+      "instructions": "How urgent is this message?",
+      "criteria": ["routine", "same-day", "drop everything"]
+    },
+    "route": {
+      "type": "choice",
+      "instructions": "Which team should handle it?",
+      "criteria": {
+        "billing": "invoices, payments, refunds",
+        "technical": "bugs, outages, integrations",
+        "security": "phishing, scams, account compromise"
+      }
+    }
+  }
+}
