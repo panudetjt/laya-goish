@@ -1,0 +1,68 @@
+{
+  "node": "v22.22.3",
+  "wasm_bytes": 342385,
+  "instantiate_ms": 1,
+  "model": "laya",
+  "simd128": false,
+  "memory": {
+    "linear_peak": 1697775616,
+    "peak_alloc_bytes": 1694346816,
+    "live_alloc_bytes": 845901864,
+    "alloc_calls": 196083
+  },
+  "runs": [
+    {
+      "model": "laya",
+      "tokens": 45,
+      "question": "refund",
+      "native": "native/laya_refund_f16.json",
+      "load": {
+        "gguf": "../../models/laya_english_f16.gguf",
+        "gguf_bytes": 846137888,
+        "copy_ms": 307,
+        "parse_ms": 15.2,
+        "build_ms": 384.2,
+        "load_inside_ms": 399.4,
+        "load_wall_ms": 673,
+        "linear_after_load": 1697251328,
+        "live_alloc_after_load": 845901848,
+        "peak_alloc_after_load": 1694346816
+      },
+      "forwards": {
+        "warmup": 0,
+        "repeats": 1,
+        "inside_ms": [
+          22612.2
+        ],
+        "wall_ms": [
+          22612.2
+        ],
+        "mean_inside_ms": 22612.2,
+        "trapped": null
+      },
+      "drift_vs_native": {
+        "n": 2,
+        "max_dlogit": 0.0000010728836059570312,
+        "rms_dlogit": 7.771494871619522e-7,
+        "drift_act": {
+          "n": 2,
+          "max_dlogit": 0.00048828125,
+          "rms_dlogit": 0.00048828125
+        },
+        "dp_after_temp": 4.07973050758903e-8
+      },
+      "engine_ref": {
+        "noul": 0.8911915421485901,
+        "p_true": 0.8911915421485901
+      },
+      "logits": [
+        -2.87631893157959,
+        1.294712781906128
+      ],
+      "act_logits": [
+        4293.92431640625,
+        -3514.603515625
+      ]
+    }
+  ]
+}

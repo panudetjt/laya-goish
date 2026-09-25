@@ -25,3 +25,4 @@ __pycache__/
 /sidecar/kernels/*.ptx
 wayfinder
 prototypes/**/target
+graphify-out

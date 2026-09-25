@@ -1,0 +1,8 @@
+/target
+/http-*.log
+/parity.report.json
+/http.report.json
+/openthai-http.report.json
+/soak.report.json
+/churn.report.json
+/soak.report.server.log

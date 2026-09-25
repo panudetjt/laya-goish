@@ -1,0 +1,29 @@
+[package]
+name = "laya-engine"
+version = "0.1.0"
+edition = "2021"
+description = "Laya GGUF decision inference in std Rust (port of the goish engine core)"
+
+# Lib target for the cross-compile gates (src/lib.rs mirrors main.rs's mod
+# list; the bin is the shipped CLI and is unchanged). See ticket 14.
+[lib]
+name = "laya_engine"
+
+[dependencies]
+libm = { version = "=0.2.16", default-features = false }
+serde = { version = "=1.0.229", default-features = false, features = ["alloc"] }
+serde_json = { version = "=1.0.151", default-features = false, features = ["alloc"] }
+
+unicode-normalization = { version = "=0.1.25", default-features = false }
+unicode-general-category = "=1.1.0"
+
+memmap2 = "0.9"
+
+[profile.dev]
+panic = "abort"
+[profile.release]
+panic = "abort"
+lto = "thin"
+codegen-units = 1
+debug = 0
+strip = "symbols"

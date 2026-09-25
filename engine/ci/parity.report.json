@@ -1,0 +1,355 @@
+{
+  "status": "passed",
+  "checks": [
+    {
+      "name": "static:root_get",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:root_head",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:health_get",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:health_head",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:health_get_close",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:health_http10",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:health_query",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:models_get",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:presets_get",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:keepalive_3",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:missing_get",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:missing_delete",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:decide_get",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:decide_head",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:health_post",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:case_sensitive_path",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:absolute_uri",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:no_host_11",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:decide_no_ct",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:decide_ct_charset",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:decide_bad_json",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:decide_dup_key",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:decide_empty_body",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:decide_array",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:decide_null",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:decide_unknown_model",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:decide_bad_question",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:decide_no_state",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:decide_preset",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:batch_empty_states",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:oversize_fixed",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:oversize_chunked",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:chunked_json_error",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:decide_valid",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:systemone_valid",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:batch_valid",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "x-request-id sequence advances by 1",
+      "ok": true,
+      "detail": "{'goish': [1, 1], 'engine': [1, 1]}"
+    },
+    {
+      "name": "raw:malformed_request_line",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "raw:bad_method",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "raw:bad_version",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "raw:space_path",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "raw:bad_content_length",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "raw:cl_and_te",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "raw:negative_cl",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "raw:unknown_te",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "raw:duplicate_host",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "raw:bad_header_line",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "raw:lf_only",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "raw:expect_continue",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "raw:expect_weird",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "raw:empty_conn",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "raw:hdrline_20k",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "raw:head_total_30k",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:openthai_decide_0",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:openthai_decide_1",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "openthai: HTTP answers equal own-CLI reference",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "busy: concurrent inference 429 bytes",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "busy: health during inference bytes",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "busy: in-flight 200 completion bytes",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:auth_models_noauth",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:auth_models_wrong",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:auth_models_basic",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:auth_decide_noauth",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:auth_health_public",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:auth_models_ok",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "static:auth_decide_ok",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "auth: exit code 0 after SIGTERM",
+      "ok": true,
+      "detail": "{'goish': 0, 'engine': 0}"
+    },
+    {
+      "name": "drain: in-flight request completed 200",
+      "ok": true,
+      "detail": "{'goish': {'inflight': b'HTTP/1.1 200 OK', 'refused': True, 'rc': 0}, 'engine': {'inflight': b'HTTP/1.1 200 OK', 'refused': True, 'rc': 0}}"
+    },
+    {
+      "name": "drain: new connections refused",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "drain: exit code 0",
+      "ok": true,
+      "detail": "{'goish': {'inflight': b'HTTP/1.1 200 OK', 'refused': True, 'rc': 0}, 'engine': {'inflight': b'HTTP/1.1 200 OK', 'refused': True, 'rc': 0}}"
+    }
+  ]
+}

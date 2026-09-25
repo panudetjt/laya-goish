@@ -1,0 +1,136 @@
+# Release/CI matrix for the std engine — wayfinder ticket 14.
+#
+# Mirrors engine/ci/run.sh (the workflow calls the same runner, so local and
+# CI execute identical tiers). Five targets: x86-64 gnu (full gates), x86-64
+# musl static, wasm32-unknown-unknown (compile check), Windows MSVC +
+# macOS x86_64/aarch64 + aarch64-linux (compile checks), plus fmt/clippy.
+#
+# Ready to enable: currently manual (workflow_dispatch). To gate every
+# change, uncomment the push/pull_request triggers below.
+#
+# MODELS LIMITATION (honest): the GGUF models are external artifacts kept
+# out of git. Without them the runtime tiers (smoke/drift/quant) print SKIP
+# and the job still proves every target BUILDS. Check "fetch_models" on a
+# manual run (or set it in a cached step) to download the Laya F16/Q8_0
+# weights (~1.3 GB) — scripts/download-models.sh fetches Laya models only;
+# the OpenThai GGUFs are conversion artifacts (docs/openthai.md) and are not
+# published, so the 42-combo drift tiers stay local-only
+# (`engine/ci/run.sh full`) until they are. Likewise the drift reference
+# binary ./laya is not in git: in CI the musl job drifts engine-gnu vs
+# engine-musl (REF_BIN override), and the x86 drift tier stays SKIP unless
+# REF_BIN is provided (e.g. a commented step below builds the frozen goish
+# reference from src/).
+
+name: engine-ci
+
+on:
+  workflow_dispatch:
+    inputs:
+      fetch_models:
+        description: "Download Laya F16/Q8_0 models so runtime tiers run"
+        type: boolean
+        default: false
+  # Enable automatic gating by uncommenting:
+  # push:
+  #   branches: [main]
+  # pull_request:
+
+concurrency:
+  group: engine-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: fmt + clippy (engine only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+      - run: bash engine/ci/run.sh lint
+
+  x86-64:
+    name: x86-64 gnu (full build + gates when models present)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+      - name: Fetch Laya models (optional; runtime tiers SKIP without them)
+        if: ${{ github.event.inputs.fetch_models == 'true' }}
+        run: bash scripts/download-models.sh f16 q8_0
+      # Optional: gate drift against the frozen goish reference instead of
+      # SKIP. Build it read-only from src/, then let run.sh find ./laya:
+      # - run: cargo build --release && cp target/x86_64-unknown-linux-gnu/release/laya ./laya
+      - name: Tiers (build, smoke, drift, quant — each SKIPs if unmet)
+        run: bash engine/ci/run.sh build smoke drift quant
+
+  musl:
+    name: x86-64 musl static (build + static-pie + gnu-vs-musl drift)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+      - name: Fetch Laya models (optional; runtime tiers SKIP without them)
+        if: ${{ github.event.inputs.fetch_models == 'true' }}
+        run: bash scripts/download-models.sh f16 q8_0
+      - name: Build gnu (CI drift reference; local runs use ./laya)
+        run: bash engine/ci/run.sh build
+      - name: musl tier
+        env:
+          REF_BIN: ${{ github.workspace }}/engine/target/x86_64-unknown-linux-gnu/release/laya-engine
+        run: bash engine/ci/run.sh musl
+
+  wasm32:
+    name: wasm32-unknown-unknown (compile check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+      - run: bash engine/ci/run.sh wasm
+
+  cross:
+    name: compile check ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+          - aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+          key: ${{ matrix.target }}
+      - run: bash engine/ci/run.sh cross:${{ matrix.target }}

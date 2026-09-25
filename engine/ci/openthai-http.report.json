@@ -1,0 +1,8 @@
+{
+  "status": "passed",
+  "checks": [
+    "batch preserves option-order averaging settings",
+    "model, schema, option limits and context overflow return 422",
+    "health stays responsive and overload returns 429 during OpenThai inference"
+  ]
+}

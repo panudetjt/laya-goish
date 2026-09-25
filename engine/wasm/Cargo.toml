@@ -1,0 +1,19 @@
+[package]
+name = "laya-engine-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "wasm32 extern-C ABI over the laya-engine core (wayfinder ticket 19)"
+
+[lib]
+name = "laya_engine_wasm"
+crate-type = ["cdylib"]
+
+[dependencies]
+laya-engine = { path = ".." }
+
+[profile.release]
+panic = "abort"
+lto = "thin"
+codegen-units = 1
+opt-level = 3
+debug = 0
