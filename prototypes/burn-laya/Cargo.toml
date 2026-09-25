@@ -1,0 +1,32 @@
+[package]
+name = "burn-laya"
+version = "0.1.0"
+edition = "2021"
+
+# Prototype: burn 0.21 (burn-flex CPU + burn-wgpu) port of the Laya English
+# forward pass (wayfinder ticket 06). Not part of the engine workspace; keeps
+# its own target dir.
+#
+# Version pin rationale (crates.io, 2026-09-25): burn-flex shipped in a
+# STABLE release at 0.21.0 (2026-05-07); 0.22.0-pre.4 exists but is a
+# pre-release mid-overhaul (burn-candle removed, ndarray/tch deprecated).
+# Pinning stable 0.21 gives a working, released flex CPU backend plus
+# burn-wgpu 0.21 (cubecl 0.10) for the GPU leg.
+
+[dependencies]
+burn = { version = "0.21.0", features = ["flex", "wgpu"] }
+serde = { version = "1", features = ["derive"] }
+# preserve_order keeps the engine's probability label order for drift compare.
+serde_json = { version = "1", features = ["preserve_order"] }
+safetensors = "0.8"
+half = "2.7"
+memmap2 = "0.9"
+# version matched to cubecl 0.10's wgpu (see Cargo.lock) so adapter
+# enumeration sees exactly what burn-wgpu sees
+wgpu = "29.0"
+pollster = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

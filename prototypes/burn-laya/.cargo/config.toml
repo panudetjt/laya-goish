@@ -1,0 +1,8 @@
+# Same override as prototypes/candle-laya: the repo root .cargo/config.toml
+# carries the no_std engine's link flags; local config keys replace (not
+# merge with) parent values, so this restores a normal std binary.
+[build]
+target = "x86_64-unknown-linux-gnu"
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=native"]

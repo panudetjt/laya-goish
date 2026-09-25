@@ -1,0 +1,22 @@
+[package]
+name = "wasm-probe"
+version = "0.1.0"
+edition = "2021"
+
+# MUST-DO 1 probe: does candle-core 0.11 (pure CPU: empty default features,
+# gemm + rayon are non-optional) compile and RUN for wasm32-unknown-unknown?
+# Expected friction to characterize: getrandom (rand/uuid), rayon fallback,
+# any Instant/clock use, pulp/gemm arch paths.
+
+[dependencies]
+candle-core = "=0.11.0"
+rayon = "1"
+getrandom = "0.3"
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

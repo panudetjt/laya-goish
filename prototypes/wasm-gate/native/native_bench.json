@@ -1,0 +1,48 @@
+{
+  "machine": "i5-14400 (6P+4E), WSL2, rust 1.96, 2026-09-25",
+  "protocol": "1 warmup + 8 measured, forward-only, native candle prototypes (tickets 05/07 binaries)",
+  "laya_refund_f16": {
+    "t1": {
+      "mean_ms": 1096.8,
+      "min_ms": 1086.9
+    },
+    "t4": {
+      "mean_ms": 457.2,
+      "min_ms": 434.4
+    },
+    "peak_rss_mib": 2046
+  },
+  "openthai_thai_f16": {
+    "t1": {
+      "mean_ms": 3205.5,
+      "min_ms": 3120.6
+    },
+    "t4": {
+      "mean_ms": 1133.0,
+      "min_ms": 1108.3
+    },
+    "peak_rss_mib": 2954
+  },
+  "openthai_thai_convert": {
+    "t1": {
+      "mean_ms": 2043.4,
+      "min_ms": 2011.7
+    },
+    "t4": {
+      "mean_ms": 747.6,
+      "min_ms": 694.5
+    },
+    "peak_rss_mib": 4389
+  },
+  "openthai_thai_q8_upcast": {
+    "t1": {
+      "mean_ms": 2026.5,
+      "min_ms": 1992.3
+    },
+    "t4": {
+      "mean_ms": 725.9,
+      "min_ms": 674.0
+    },
+    "peak_rss_mib": 3944
+  }
+}

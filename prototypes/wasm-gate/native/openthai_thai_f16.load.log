@@ -1,0 +1,1 @@
+loaded ../../models/openthai_systemone_v03_f16.gguf layers=24 full_layers=[3, 7, 11, 15, 19, 23] mode=F16 load_ms=1876 peak_rss=2954MiB

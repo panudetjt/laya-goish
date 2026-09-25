@@ -1,0 +1,1 @@
+loaded ../../models/laya_english_f16.gguf layers=28 d=1024 heads=16x64 mode=F16 load_ms=1044 peak_rss=2046MiB

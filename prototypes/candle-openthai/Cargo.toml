@@ -1,0 +1,29 @@
+[package]
+name = "candle-openthai"
+version = "0.1.0"
+edition = "2021"
+
+# Prototype: candle-CPU port of the OpenThai-SystemOne forward (Gated-DeltaNet
+# hybrid), wayfinder ticket "Prototype: OpenThai GDN custom op on the winning
+# stack". Not part of the engine workspace; keeps its own target dir.
+
+[dependencies]
+# candle-core 0.11.0: default features are EMPTY; gemm 0.19 + rayon are
+# non-optional deps, so plain "=0.11.0" is the pure CPU gemm+rayon build.
+# No mkl/accelerate/cuda.
+candle-core = "=0.11.0"
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+# preserve_order keeps the engine's question/label order for drift compare.
+serde_json = { version = "1", features = ["preserve_order"] }
+# libm 0.2: same libm the engine uses for expf/logf/powf/cosf/sinf/log1pf, so
+# the scalar GDN/decision math matches the engine bit-for-bit.
+libm = "0.2"
+# half 2.x: candle's F16 payload type; used to build F16 tensors straight
+# from GGUF bits (no f32 roundtrip, no 2x temp).
+half = "2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

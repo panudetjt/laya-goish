@@ -1,0 +1,1 @@
+{"answers":{"refund":{"type":"noul","noul":0.8912805914878845,"confidence":0.8912805914878845,"probabilities":{"false":0.10871946066617966,"true":0.8912805914878845},"action":{"act_probability":1.0},"logits":[-2.87762451171875,1.29522705078125],"act_logits":[4291.9931640625,-3514.03857421875],"forward_ms":425.89739399999996}},"usage":{"input_tokens":45}}

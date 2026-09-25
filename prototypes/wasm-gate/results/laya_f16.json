@@ -1,0 +1,76 @@
+{
+  "node": "v22.22.3",
+  "wasm_bytes": 1348158,
+  "instantiate_ms": 2.2,
+  "model": "laya",
+  "mode": "f16",
+  "memory": {
+    "linear_peak": 1956708352,
+    "peak_alloc_bytes": 1909112665,
+    "live_alloc_bytes": 843579862,
+    "alloc_calls": 250028
+  },
+  "runs": [
+    {
+      "model": "laya",
+      "mode": "f16",
+      "tokens": 45,
+      "case": "../candle-laya/reference/refund.json",
+      "load": {
+        "gguf": "../../models/laya_english_f16.gguf",
+        "gguf_bytes": 846137888,
+        "copy_ms": 261.1,
+        "parse_ms": 16.1,
+        "build_ms": 1426.5,
+        "load_inside_ms": 1442.6,
+        "load_wall_ms": 1444.4,
+        "linear_after_load": 1956708352,
+        "live_alloc_after_load": 843051950,
+        "peak_alloc_after_load": 1909112665
+      },
+      "forwards": {
+        "warmup": 1,
+        "repeats": 5,
+        "inside_ms": [
+          4021.9,
+          4086.2,
+          3875.1,
+          3976.3,
+          3994.2
+        ],
+        "wall_ms": [
+          4021.9,
+          4086.2,
+          3875.1,
+          3976.3,
+          3994.2
+        ],
+        "mean_inside_ms": 3990.7400000000002,
+        "trapped": null
+      },
+      "drift_vs_native": {
+        "n": 2,
+        "max_dlogit": 0.001953125,
+        "rms_dlogit": 0.0013810679320049757,
+        "drift_act": {
+          "n": 2,
+          "max_dlogit": 0,
+          "rms_dlogit": 0
+        },
+        "dp_after_temp": 0.00009545723184190003
+      },
+      "engine_ref": {
+        "noul": 0.8911915421485901,
+        "p_true": 0.8911915421485901
+      },
+      "logits": [
+        -2.87567138671875,
+        1.29522705078125
+      ],
+      "act_logits": [
+        4291.9931640625,
+        -3514.03857421875
+      ]
+    }
+  ]
+}

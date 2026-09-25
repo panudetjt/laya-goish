@@ -1,0 +1,1 @@
+loaded ../../models/openthai_systemone_v03_q8_0.gguf layers=24 full_layers=[3, 7, 11, 15, 19, 23] mode=Upcast load_ms=4699 peak_rss=3944MiB

@@ -23,3 +23,5 @@ __pycache__/
 /sidecar/target/
 /sidecar/kernels/*.cubin
 /sidecar/kernels/*.ptx
+wayfinder
+prototypes/**/target
