@@ -1,3 +1,3 @@
 loaded laya from /home/jame/work/my-project/laya-goish/models/laya_english_f16.gguf (28 layers, 4 threads)
-laya HTTP listening at http://127.0.0.1:34141 (bearer auth: off)
+laya HTTP listening at http://127.0.0.1:40177 (bearer auth: off)
 laya HTTP: draining requests (30 second deadline)

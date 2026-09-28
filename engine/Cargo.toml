@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2021"
 description = "Laya GGUF decision inference in std Rust (port of the goish engine core)"
 
+# wasm_threads gates the +atomics artifact's host-driven worker fan-out
+# (team.rs) and serialized allocator paths (heap.rs); set via RUSTFLAGS by
+# engine/wasm/run.sh build-threads.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(wasm_threads)'] }
+
 # Lib target for the cross-compile gates (src/lib.rs mirrors main.rs's mod
 # list; the bin is the shipped CLI and is unchanged). See ticket 14.
 [lib]

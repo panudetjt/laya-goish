@@ -14,8 +14,13 @@
 /server.pid
 __pycache__/
 
-/dist/*
+**/dist/*
 !/dist/.gitkeep
+
+**/release/*
+**/target/*
+**/target-threads/*
+*.log
 
 .omo
 .scratch
@@ -26,3 +31,4 @@ __pycache__/
 wayfinder
 prototypes/**/target
 graphify-out
+

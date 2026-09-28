@@ -6,10 +6,20 @@
 //! splits/merges 16-byte-aligned heap chunks (or mmap/munmaps them), which
 //! measurably slowed the streaming AVX2 kernels. This allocator keeps a
 //! small fixed-slot free list per power-of-two size class (64 KiB..16 MiB,
-//! page-aligned, at most 4 cached blocks per class) and delegates everything
-//! else to the system allocator. `alloc_zeroed` re-zeroes cached blocks —
-//! required because e.g. the GeGLU and GDN outputs accumulate with `+=`
-//! into the fresh `vec![0.]` buffers.
+//! page-aligned, at most 4 cached blocks per class and at most
+//! `CLASS_RETAIN` bytes per class) and delegates everything else to the
+//! system allocator. `alloc_zeroed` re-zeroes cached blocks — required
+//! because e.g. the GeGLU and GDN outputs accumulate with `+=` into the
+//! fresh `vec![0.]` buffers.
+//!
+//! Page return (ticket 21): class blocks are anonymous page mappings, not
+//! glibc chunks. Blocks freed past the retention cap munmap straight back
+//! to the OS instead of being stashed in ptmalloc's arena — freeing a
+//! large mmap'd chunk raises glibc's dynamic mmap threshold, after which
+//! same-sized allocations come from the brk arena and are never returned;
+//! over the ticket-13 soak that arena dance retained +310 MiB at the
+//! concurrent peak. Fresh mappings arrive zeroed, so the refill path pays
+//! page faults (what glibc's own mmap path paid too), not memset.
 #[cfg(not(target_arch = "wasm32"))]
 use std::alloc::GlobalAlloc;
 #[cfg(not(target_arch = "wasm32"))]
@@ -31,6 +41,13 @@ const CLASSES: usize = MAX_CLASS.ilog2() as usize - MIN_CLASS.ilog2() as usize +
 const SLOTS: usize = 4;
 #[cfg(not(target_arch = "wasm32"))]
 const PAGE: usize = 4096;
+// Per-class retention cap: cached bytes per size class stay at or below
+// this (SLOTS still bounds the block count), so total retention across the
+// nine classes is bounded (~32 MiB worst case) instead of the 128 MiB a
+// full 4-slot cache of every class could hold. Classes larger than the
+// cap are never cached — their blocks return to the OS on free.
+#[cfg(not(target_arch = "wasm32"))]
+const CLASS_RETAIN: usize = 8 << 20;
 
 #[cfg(not(target_arch = "wasm32"))]
 struct Cache {
@@ -68,13 +85,13 @@ unsafe impl GlobalAlloc for EngineAlloc {
             Some(c) => {
                 let mut cache = self.large.lock().unwrap();
                 let i = cache.used[c];
-                if i < SLOTS {
+                if i < slots_for(c) {
                     cache.blocks[c][i] = ptr;
                     cache.used[c] = i + 1;
                     return;
                 }
                 drop(cache);
-                System.dealloc(ptr, class_layout(c));
+                sys::free(ptr, class_size(c));
             }
             None => System.dealloc(ptr, layout),
         }
@@ -104,12 +121,7 @@ impl EngineAlloc {
             return p;
         }
         drop(cache);
-        let cl = class_layout(c);
-        if zeroed {
-            System.alloc_zeroed(cl)
-        } else {
-            System.alloc(cl)
-        }
+        sys::alloc(class_size(c), zeroed)
     }
 }
 #[cfg(not(target_arch = "wasm32"))]
@@ -122,8 +134,73 @@ fn class_of(layout: Layout) -> Option<usize> {
     Some(class.ilog2() as usize - MIN_CLASS.ilog2() as usize)
 }
 #[cfg(not(target_arch = "wasm32"))]
-fn class_layout(c: usize) -> Layout {
-    Layout::from_size_align(1 << (c + MIN_CLASS.ilog2() as usize), PAGE).unwrap()
+fn class_size(c: usize) -> usize {
+    1usize << (c + MIN_CLASS.ilog2() as usize)
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn slots_for(c: usize) -> usize {
+    SLOTS.min(CLASS_RETAIN >> (MIN_CLASS.ilog2() as usize + c))
+}
+
+// Backing store for class blocks. On Linux they are raw anonymous page
+// mappings: freed-overflow blocks munmap straight back to the kernel (no
+// ptmalloc arena stash, no dynamic mmap-threshold growth), and fresh
+// mappings arrive zeroed so the zeroed-alloc path pays nothing extra.
+// Other non-wasm targets (Windows/macOS compile checks) keep the system
+// allocator with identical semantics.
+#[cfg(target_os = "linux")]
+mod sys {
+    use std::ptr;
+
+    const PROT_READ_WRITE: i32 = 0x1 | 0x2;
+    const MAP_PRIVATE_ANONYMOUS: i32 = 0x02 | 0x20;
+
+    extern "C" {
+        fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut u8;
+        fn munmap(addr: *mut u8, len: usize) -> i32;
+    }
+
+    // Safety: `size` is a class size (a power of two >= 64 KiB), so the
+    // mapping length and page alignment always match the dealloc side.
+    pub unsafe fn alloc(size: usize, _zeroed: bool) -> *mut u8 {
+        let p = mmap(
+            ptr::null_mut(),
+            size,
+            PROT_READ_WRITE,
+            MAP_PRIVATE_ANONYMOUS,
+            -1,
+            0,
+        );
+        if p as usize == usize::MAX {
+            ptr::null_mut()
+        } else {
+            p
+        }
+    }
+
+    // Safety: `ptr` came from `alloc(size)` with the same class size.
+    pub unsafe fn free(ptr: *mut u8, size: usize) {
+        let _ = munmap(ptr, size);
+    }
+}
+#[cfg(all(not(target_os = "linux"), not(target_arch = "wasm32")))]
+mod sys {
+    use std::alloc::{GlobalAlloc, Layout, System};
+
+    fn layout(size: usize) -> Layout {
+        Layout::from_size_align(size, super::PAGE).unwrap()
+    }
+
+    pub unsafe fn alloc(size: usize, zeroed: bool) -> *mut u8 {
+        if zeroed {
+            System.alloc_zeroed(layout(size))
+        } else {
+            System.alloc(layout(size))
+        }
+    }
+    pub unsafe fn free(ptr: *mut u8, size: usize) {
+        System.dealloc(ptr, layout(size));
+    }
 }
 #[cfg(not(target_arch = "wasm32"))]
 #[global_allocator]
@@ -145,6 +222,7 @@ static ALLOC: EngineAlloc = EngineAlloc {
 mod wasm {
     use core::sync::atomic::{AtomicUsize, Ordering};
     use std::alloc::{GlobalAlloc, Layout, System};
+    #[cfg(not(wasm_threads))]
     use std::sync::Mutex;
 
     const PAGE: usize = 65536;
@@ -158,8 +236,62 @@ mod wasm {
         free: Vec<(usize, usize)>,
     }
 
+    // std's wasm32-unknown-unknown locks are the no_threads fakes: the
+    // distributed std rlib is built without atomics, so std Mutex panics
+    // ("cannot recursively acquire mutex") the moment two agents contend
+    // (observed on rustc 1.96 under the threads artifact). The atomics
+    // build therefore serializes both allocator paths with this real
+    // compare_exchange spinlock; the no-atomics build keeps the std Mutex,
+    // which is exact for its single-agent regime.
+    #[cfg(wasm_threads)]
+    use core::sync::atomic::AtomicBool;
+
+    #[cfg(wasm_threads)]
+    struct SpinLock(AtomicBool);
+
+    #[cfg(wasm_threads)]
+    impl SpinLock {
+        const fn new() -> Self {
+            Self(AtomicBool::new(false))
+        }
+        fn lock(&self) -> SpinGuard<'_> {
+            while self
+                .0
+                .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_err()
+            {
+                core::hint::spin_loop();
+            }
+            SpinGuard(self)
+        }
+    }
+
+    #[cfg(wasm_threads)]
+    struct SpinGuard<'a>(&'a SpinLock);
+
+    #[cfg(wasm_threads)]
+    impl Drop for SpinGuard<'_> {
+        fn drop(&mut self) {
+            self.0 .0.store(false, Ordering::Release);
+        }
+    }
+
+    #[cfg(not(wasm_threads))]
     static BIG_LOCK: Mutex<()> = Mutex::new(());
+    #[cfg(wasm_threads)]
+    static BIG_LOCK: SpinLock = SpinLock::new();
+
     static mut BIG: Big = Big { free: Vec::new() };
+
+    // std's wasm32 dlmalloc arena is not safe for concurrent callers
+    // (cross-agent alloc/free corrupts its free list, verified on rustc
+    // 1.96), so the small-block delegation is serialized whenever the
+    // atomics build lets workers allocate in parallel. BIG_LOCK already
+    // serializes the large path.
+    #[cfg(not(wasm_threads))]
+    static SMALL_LOCK: Mutex<()> = Mutex::new(());
+    #[cfg(wasm_threads)]
+    static SMALL_LOCK: SpinLock = SpinLock::new();
 
     impl Big {
         unsafe fn alloc(&mut self, size: usize, zeroed: bool) -> *mut u8 {
@@ -241,7 +373,7 @@ mod wasm {
             let p = if l.size() >= BIG_THRESHOLD {
                 big(|b| b.alloc(l.size(), false))
             } else {
-                System.alloc(l)
+                sys_alloc(l)
             };
             if !p.is_null() {
                 bump(l.size());
@@ -253,7 +385,7 @@ mod wasm {
             if l.size() >= BIG_THRESHOLD {
                 big(|b| b.dealloc(p, l.size()));
             } else if small_ok(p, l.size()) {
-                System.dealloc(p, l);
+                sys_dealloc(p, l);
             }
         }
         unsafe fn realloc(&self, p: *mut u8, l: Layout, ns: usize) -> *mut u8 {
@@ -280,7 +412,7 @@ mod wasm {
                 if l.size() >= BIG_THRESHOLD {
                     big(|b| b.dealloc(p, l.size()));
                 } else if small_ok(p, l.size()) {
-                    System.dealloc(p, l);
+                    sys_dealloc(p, l);
                 }
                 bump(ns);
                 return q;
@@ -301,7 +433,7 @@ mod wasm {
             if !small_ok(p, l.size()) {
                 return std::ptr::null_mut();
             }
-            let q = System.realloc(p, l, ns);
+            let q = sys_realloc(p, l, ns);
             if !q.is_null() {
                 if ns >= l.size() {
                     bump(ns - l.size());
@@ -315,7 +447,7 @@ mod wasm {
             let p = if l.size() >= BIG_THRESHOLD {
                 big(|b| b.alloc(l.size(), true))
             } else {
-                System.alloc_zeroed(l)
+                sys_alloc_zeroed(l)
             };
             if !p.is_null() {
                 bump(l.size());
@@ -325,8 +457,43 @@ mod wasm {
     }
 
     unsafe fn big<R>(f: impl FnOnce(&mut Big) -> R) -> R {
+        #[cfg(not(wasm_threads))]
         let _guard = BIG_LOCK.lock().unwrap();
+        #[cfg(wasm_threads)]
+        let _guard = BIG_LOCK.lock();
         f(&mut *core::ptr::addr_of_mut!(BIG))
+    }
+
+    unsafe fn sys_alloc(l: Layout) -> *mut u8 {
+        #[cfg(not(wasm_threads))]
+        let _g = SMALL_LOCK.lock().unwrap();
+        #[cfg(wasm_threads)]
+        let _g = SMALL_LOCK.lock();
+        System.alloc(l)
+    }
+
+    unsafe fn sys_alloc_zeroed(l: Layout) -> *mut u8 {
+        #[cfg(not(wasm_threads))]
+        let _g = SMALL_LOCK.lock().unwrap();
+        #[cfg(wasm_threads)]
+        let _g = SMALL_LOCK.lock();
+        System.alloc_zeroed(l)
+    }
+
+    unsafe fn sys_dealloc(p: *mut u8, l: Layout) {
+        #[cfg(not(wasm_threads))]
+        let _g = SMALL_LOCK.lock().unwrap();
+        #[cfg(wasm_threads)]
+        let _g = SMALL_LOCK.lock();
+        System.dealloc(p, l)
+    }
+
+    unsafe fn sys_realloc(p: *mut u8, l: Layout, ns: usize) -> *mut u8 {
+        #[cfg(not(wasm_threads))]
+        let _g = SMALL_LOCK.lock().unwrap();
+        #[cfg(wasm_threads)]
+        let _g = SMALL_LOCK.lock();
+        System.realloc(p, l, ns)
     }
 
     fn bump(delta: usize) {

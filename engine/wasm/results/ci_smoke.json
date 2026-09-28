@@ -1,7 +1,8 @@
 {
   "node": "v22.22.3",
-  "wasm_bytes": 342385,
+  "wasm_bytes": 330191,
   "instantiate_ms": 1.1,
+  "threads": 1,
   "model": "laya",
   "simd128": true,
   "memory": {
@@ -19,11 +20,11 @@
       "load": {
         "gguf": "/home/jame/work/my-project/laya-goish/models/laya_english_f16.gguf",
         "gguf_bytes": 846137888,
-        "copy_ms": 336.7,
-        "parse_ms": 18.2,
-        "build_ms": 415.6,
-        "load_inside_ms": 433.8,
-        "load_wall_ms": 702.6,
+        "copy_ms": 281.1,
+        "parse_ms": 20.5,
+        "build_ms": 397.1,
+        "load_inside_ms": 417.6,
+        "load_wall_ms": 685.9,
         "linear_after_load": 1697251328,
         "live_alloc_after_load": 845901848,
         "peak_alloc_after_load": 1694346816
@@ -32,12 +33,12 @@
         "warmup": 0,
         "repeats": 1,
         "inside_ms": [
-          1708.6
+          1726.8
         ],
         "wall_ms": [
-          1708.7
+          1726.9
         ],
-        "mean_inside_ms": 1708.6,
+        "mean_inside_ms": 1726.8,
         "trapped": null
       },
       "drift_vs_native": {

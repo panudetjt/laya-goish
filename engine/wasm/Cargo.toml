@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 description = "wasm32 extern-C ABI over the laya-engine core (wayfinder ticket 19)"
 
+# wasm_threads gates the threads artifact's exports (wasm_set_threads +
+# team.rs worker ABI); set via RUSTFLAGS by run.sh build-threads.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(wasm_threads)'] }
+
 [lib]
 name = "laya_engine_wasm"
 crate-type = ["cdylib"]

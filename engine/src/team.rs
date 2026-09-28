@@ -30,16 +30,151 @@ use std::hint::spin_loop;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Mutex, Once, OnceLock};
 
-// wasm32-unknown-unknown cannot spawn threads. Every range still runs,
+// wasm32 without atomics cannot spawn threads. Every range still runs,
 // sequentially on the caller, with the same disjoint-range arithmetic, so
 // outputs match the threaded engine element-for-element; the wasm bars are
 // single-threaded by design (wayfinder ticket 19).
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", not(wasm_threads)))]
 pub fn fanout<F: Fn(usize) + Sync>(count: usize, f: &F) {
     for t in 0..count {
         f(t);
     }
 }
+
+// wasm32 +atomics worker fan-out (wayfinder ticket 24). std::thread is not
+// implemented for wasm32-unknown-unknown — Builder::spawn returns
+// Err("operation not supported on this platform") on rustc 1.96 — so the
+// host drives the workers: it instantiates this module once per worker
+// over ONE shared WebAssembly.Memory, points each instance's exported
+// __stack_pointer at a private stack slot, and parks the worker in JS on
+// the GEN word of the shared linear memory (std's wasm futex intrinsics
+// are unstable, so Atomics.wait/notify live host-side). The caller
+// publishes the job, bumps GEN, and wakes the workers through the
+// imported env.futex_wake; workers run wasm_worker_poll per wake. All
+// statics live in shared linear memory, so the protocol state — and the
+// sync edges the job cell relies on — are common to every instance.
+// Workers spawn before any state exists (late instantiation re-applies
+// active data segments and would reset statics), so the harness gates on
+// wasm_team_ready before the first load.
+#[cfg(all(target_arch = "wasm32", wasm_threads))]
+mod wasm_threads {
+    use core::cell::UnsafeCell;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    type Run = fn(*const u8, usize);
+    struct JobDesc {
+        run: Run,
+        ctx: *const u8,
+    }
+    struct JobCell(UnsafeCell<JobDesc>);
+    // SAFETY: a published JobDesc is only invoked, never moved, and is not
+    // mutated while visible to workers (the gen protocol serializes
+    // publish vs. read exactly as the native team does).
+    unsafe impl Sync for JobCell {}
+    static JOB: JobCell = JobCell(UnsafeCell::new(JobDesc {
+        run: |_ctx, _t| {},
+        ctx: core::ptr::null(),
+    }));
+
+    static GEN: AtomicUsize = AtomicUsize::new(0);
+    static DONE: AtomicUsize = AtomicUsize::new(0);
+    static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+    static READY: AtomicUsize = AtomicUsize::new(0);
+
+    #[link(wasm_import_module = "env")]
+    extern "C" {
+        fn futex_wake(addr: u32, count: u32);
+    }
+
+    /// Same contract as the native fanout: f(t) for t in 0..count, caller
+    /// runs t=0, returns after every range completed. Falls back to the
+    /// sequential loop when the host spawned fewer workers than count-1
+    /// (or none — the artifact stays usable single-instance).
+    pub fn fanout<F: Fn(usize) + Sync>(count: usize, f: &F) {
+        if count <= 1 {
+            f(0);
+            return;
+        }
+        if READY.load(Ordering::Acquire) < count - 1 {
+            for t in 0..count {
+                f(t);
+            }
+            return;
+        }
+        // SAFETY: workers only read JOB after observing the gen store
+        // below (Release/Acquire pair) and only invoke it while this
+        // function is still on the stack (it returns once done reaches
+        // count-1), so f outlives every use.
+        unsafe {
+            (*JOB.0.get()) = JobDesc {
+                run: |ctx, t| (*(ctx as *const F))(t),
+                ctx: f as *const F as *const u8,
+            };
+        }
+        ACTIVE.store(count, Ordering::Release);
+        DONE.store(0, Ordering::Relaxed);
+        // SeqCst store + futex wake: every worker either loads the new gen
+        // or is inside its host-side wait, whose expected value was read
+        // before — Atomics.wait re-checks the value atomically, so a wake
+        // can never be missed.
+        GEN.store(GEN.load(Ordering::Relaxed) + 1, Ordering::SeqCst);
+        unsafe {
+            futex_wake(&GEN as *const AtomicUsize as usize as u32, count as u32 - 1);
+        }
+        f(0);
+        // The caller is the critical path; at K<=4 workers the join tail
+        // is short enough that spinning beats a host wait round-trip.
+        while DONE.load(Ordering::Acquire) < count - 1 {
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Worker registration: bumps the ready count and returns the GEN
+    /// baseline the host should park on.
+    #[no_mangle]
+    pub extern "C" fn wasm_worker_hello() -> u32 {
+        READY.fetch_add(1, Ordering::SeqCst);
+        GEN.load(Ordering::Acquire) as u32
+    }
+
+    /// One wake iteration for worker t: runs the job if GEN moved past
+    /// `seen` and t is below ACTIVE, then returns the observed gen (the
+    /// host re-arms its wait with it).
+    #[no_mangle]
+    pub extern "C" fn wasm_worker_poll(t: u32, seen: u32) -> u32 {
+        let g = GEN.load(Ordering::Acquire);
+        if g == seen as usize {
+            return seen;
+        }
+        let active = ACTIVE.load(Ordering::Acquire);
+        if (t as usize) < active {
+            // SAFETY: gen was published after the coordinator wrote JOB
+            // (Release/Acquire pair), and the coordinator cannot return
+            // from fanout until this worker's fetch_add lands.
+            unsafe {
+                let desc = &*JOB.0.get();
+                (desc.run)(desc.ctx, t as usize);
+            }
+            DONE.fetch_add(1, Ordering::Release);
+        }
+        g as u32
+    }
+
+    /// GEN's address in linear memory (the host parks on it).
+    #[no_mangle]
+    pub extern "C" fn wasm_team_gen_addr() -> u32 {
+        &GEN as *const AtomicUsize as usize as u32
+    }
+
+    /// Workers registered so far (host gates its first load on this).
+    #[no_mangle]
+    pub extern "C" fn wasm_team_ready() -> u32 {
+        READY.load(Ordering::Acquire) as u32
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", wasm_threads))]
+pub use wasm_threads::fanout;
 
 #[cfg(not(target_arch = "wasm32"))]
 type Run = fn(*const u8, usize);

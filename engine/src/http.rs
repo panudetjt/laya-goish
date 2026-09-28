@@ -948,7 +948,10 @@ where
         // MaxConcurrentConns: a connection holds a slot for its whole
         // life; at 32 live connections the loop stops accepting and the
         // kernel backlog holds newcomers (goish semaphore semantics).
-        while live_conns(&kids) >= MAX_CONNS && !shared.draining.load(Ordering::Acquire) {
+        // The sweep also joins finished threads — an unjoined JoinHandle
+        // keeps the thread's 2 MiB stack mapped for the process lifetime,
+        // which was the +300 MiB soak plateau (wayfinder ticket 21).
+        while sweep_conns(&mut kids) >= MAX_CONNS && !shared.draining.load(Ordering::Acquire) {
             std::thread::sleep(POLL);
         }
         if shared.draining.load(Ordering::Acquire) {
@@ -991,8 +994,19 @@ where
     Ok(())
 }
 
-fn live_conns(kids: &[std::thread::JoinHandle<()>]) -> usize {
-    kids.iter().filter(|k| !k.is_finished()).count()
+fn sweep_conns(kids: &mut Vec<std::thread::JoinHandle<()>>) -> usize {
+    let mut live = 0;
+    let mut i = 0;
+    while i < kids.len() {
+        if kids[i].is_finished() {
+            let kid = kids.swap_remove(i);
+            let _ = kid.join();
+        } else {
+            live += 1;
+            i += 1;
+        }
+    }
+    live
 }
 
 // Signal plumbing: a self-pipe written by the raw signal handler (one
@@ -1052,12 +1066,41 @@ fn install_signal_drain<F: Fn() + Send + Sync + 'static>(on_drain: F) {
         .ok();
 }
 
+// Windows capture arm (ticket 23): SetConsoleCtrlHandler against
+// kernel32 via extern declarations only (std already links kernel32 on
+// both windows-msvc and windows-gnu — no new crate). The OS runs the
+// handler on its own console-ctrl thread, but it stays as minimal as
+// the unix raw handler: one atomic store, nothing else. A "laya-drain"
+// monitor thread — the same role as the unix self-pipe reader — polls
+// that flag at accept-loop granularity and runs the identical on_drain
+// closure; everything below the capture seam is shared code.
+#[cfg(windows)]
+static CTRL_SEEN: AtomicBool = AtomicBool::new(false);
+
+#[cfg(windows)]
+extern "system" fn on_ctrl_event(_ctrl_type: u32) -> i32 {
+    CTRL_SEEN.store(true, Ordering::Release);
+    1 // TRUE: handled — the default ^C/^Break termination is suppressed.
+}
+
 #[cfg(windows)]
 fn install_signal_drain<F: Fn() + Send + Sync + 'static>(on_drain: F) {
-    // Compile-check target only (ticket 14 cross tier); Windows drain
-    // wiring is its own ticket ("serving hardening on Windows" in the
-    // map's not-yet-specified list).
-    let _ = on_drain;
+    extern "system" {
+        fn SetConsoleCtrlHandler(handler: Option<extern "system" fn(u32) -> i32>, add: i32) -> i32;
+    }
+    if unsafe { SetConsoleCtrlHandler(Some(on_ctrl_event), 1) } == 0 {
+        return; // failure means no console is attached: no ctrl events
+    } // will ever arrive
+    std::thread::Builder::new()
+        .name("laya-drain".into())
+        .spawn(move || loop {
+            if CTRL_SEEN.load(Ordering::Acquire) {
+                on_drain();
+                return;
+            }
+            std::thread::sleep(ACCEPT_POLL);
+        })
+        .ok();
 }
 
 // wasm32-unknown-unknown has neither signals nor a drain thread (ticket 19

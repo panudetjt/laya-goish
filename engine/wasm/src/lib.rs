@@ -13,12 +13,27 @@ use laya_engine::{
     tensor,
 };
 use std::alloc::Layout;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 static LOAD_MS: AtomicU64 = AtomicU64::new(0);
 static PARSE_MS: AtomicU64 = AtomicU64::new(0);
 static BUILD_MS: AtomicU64 = AtomicU64::new(0);
 static FORWARD_MS: AtomicU64 = AtomicU64::new(0);
+static THREADS: AtomicU32 = AtomicU32::new(1);
+
+// The threads artifact's harness sets this before wasm_load; the default
+// (no-atomics) artifact never writes it, so its models stay 1-threaded.
+fn threads() -> usize {
+    THREADS.load(Ordering::Relaxed).max(1) as usize
+}
+
+// Fan-out width for the +atomics build's host-driven workers
+// (engine/src/team.rs wasm_threads). No-op in the default artifact.
+#[no_mangle]
+#[cfg(wasm_threads)]
+pub extern "C" fn wasm_set_threads(k: u32) {
+    THREADS.store(k, Ordering::Relaxed);
+}
 
 static mut LAYA: Option<Box<LayaModel>> = None;
 static mut OPENTHAI: Option<Box<OtModel>> = None;
@@ -128,11 +143,11 @@ pub unsafe extern "C" fn wasm_load(model: u32, ptr: *mut u8, len: usize) -> u32 
     }
     let t1 = clock();
     let result = match model {
-        0 => LayaModel::new(g, 1).map(|mut m| {
+        0 => LayaModel::new(g, threads()).map(|mut m| {
             m.g.map.release();
             LAYA = Some(Box::new(m));
         }),
-        1 => OtModel::new(g, 1).map(|m| OPENTHAI = Some(Box::new(m))),
+        1 => OtModel::new(g, threads()).map(|m| OPENTHAI = Some(Box::new(m))),
         _ => Err("bad model id (0=laya 1=openthai)".to_string()),
     };
     let build_ms = clock() - t1;

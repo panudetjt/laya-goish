@@ -23,6 +23,7 @@
 //     --repeats 3 --out results/dual.json
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { Worker } from 'node:worker_threads';
 
 const args = process.argv.slice(2);
 const opt = (k, d) => {
@@ -36,36 +37,149 @@ const REPEATS = num('--repeats', 5);
 const WARMUP = num('--warmup', 1);
 const SIMD = opt('--simd', '1');
 const WASM = opt('--wasm', 'target/wasm32-unknown-unknown/release/laya_engine_wasm.wasm');
+const THREADS = Math.max(1, num('--threads', 1));
 
-if (args.includes('--self-test')) {
-  const { instance } = await WebAssembly.instantiate(readFileSync(WASM), {
+// Threads bootstrap (ticket 24): one shared WebAssembly.Memory, the module
+// instantiated once per agent. Workers park on Atomics.wait over the GEN
+// word of the shared linear memory and call wasm_worker_poll per wake; the
+// module wakes them through the imported env.futex_wake. All worker
+// instances must complete instantiation (which re-applies the active data
+// segments) before the main instance runs any wasm — hence the ready gate.
+const WORKER_STACK = 2 << 20;
+const workerSrc = `
+const { parentPort, workerData } = require('node:worker_threads');
+(async () => {
+  const i32 = new Int32Array(workerData.memory.buffer);
+  const imports = {
+    env: {
+      now_ms: () => performance.now(),
+      futex_wake: (addr, count) => Atomics.notify(i32, addr >>> 2, count),
+      memory: workerData.memory,
+    },
+  };
+  const { instance } = await WebAssembly.instantiate(workerData.bytes, imports);
+  instance.exports.__stack_pointer.value = workerData.stackTop;
+  const e = instance.exports;
+  parentPort.postMessage({ ready: true });
+  await new Promise((resolve) => parentPort.once('message', resolve));
+  let seen = e.wasm_worker_hello();
+  const genIdx = workerData.genAddr >>> 2;
+  for (;;) {
+    const cur = Atomics.load(i32, genIdx);
+    if (cur !== seen) {
+      seen = e.wasm_worker_poll(workerData.t, seen);
+    } else {
+      Atomics.wait(i32, genIdx, seen, 500);
+      seen = e.wasm_worker_poll(workerData.t, seen);
+    }
+  }
+})().catch((e) => parentPort.postMessage({ error: String(e) }));
+`;
+
+async function instantiateThreads(bytes) {
+  let pages = 256;
+  for (;;) {
+    const memory = new WebAssembly.Memory({ shared: true, initial: pages, maximum: 65536 });
+    const i32 = new Int32Array(memory.buffer);
+    try {
+      const { instance } = await WebAssembly.instantiate(bytes, {
+        env: {
+          now_ms: () => performance.now(),
+          futex_wake: (addr, count) => Atomics.notify(i32, addr >>> 2, count),
+          memory,
+        },
+      });
+      return { memory, instance };
+    } catch (err) {
+      const m = /declared initial of (\\d+)/.exec(String(err));
+      if (m && Number(m[1]) > pages) {
+        pages = Number(m[1]);
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
+async function spawnWorkers(bytes, memory, genAddr, count) {
+  memory.grow(count * ((WORKER_STACK + 65535) >> 16) + 1);
+  const top = memory.buffer.byteLength;
+  const workers = [];
+  const ready = [];
+  await new Promise((resolve, reject) => {
+    let settled = 0;
+    for (let t = 1; t <= count; t++) {
+      const stackTop = top - (count - t) * WORKER_STACK;
+      const w = new Worker(workerSrc, {
+        eval: true,
+        workerData: { bytes, memory, t, stackTop, genAddr },
+      });
+      workers.push(w);
+      w.on('message', (m) => {
+        if (m.error) { reject(new Error(`worker ${t}: ${m.error}`)); return; }
+        if (m.ready && !ready[t]) {
+          ready[t] = true;
+          settled += 1;
+          if (settled === count) resolve();
+        }
+      });
+      w.on('error', (err) => reject(err));
+    }
+  });
+  for (const w of workers) w.postMessage('go');
+  return workers;
+}
+
+let sharedMemory = null;
+let sharedWorkers = [];
+async function boot() {
+  const bytes = readFileSync(WASM);
+  const t0 = performance.now();
+  if (THREADS > 1) {
+    const { memory, instance } = await instantiateThreads(bytes);
+    sharedMemory = memory;
+    const e = instance.exports;
+    const genAddr = e.wasm_team_gen_addr() >>> 0;
+    sharedWorkers = await spawnWorkers(bytes, memory, genAddr, THREADS - 1);
+    const t1 = performance.now();
+    while (e.wasm_team_ready() < THREADS - 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    e.wasm_set_threads(THREADS);
+    return { instance, instantiateMs: t1 - t0 + (performance.now() - t1) };
+  }
+  const { instance } = await WebAssembly.instantiate(bytes, {
     env: { now_ms: () => performance.now() },
   });
+  return { instance, instantiateMs: performance.now() - t0 };
+}
+
+if (args.includes('--self-test')) {
+  const { instance } = await boot();
   const rc = instance.exports.wasm_self_test();
   if (rc !== 0) {
     const p = instance.exports.wasm_last_error() >>> 0;
-    const end = new Uint8Array(instance.exports.memory.buffer, p, 2048).indexOf(0);
+    const mem = sharedMemory ?? instance.exports.memory;
+    const end = new Uint8Array(mem.buffer, p, 2048).indexOf(0);
     console.error('self-test FAILED:', new TextDecoder().decode(
-      new Uint8Array(instance.exports.memory.buffer, p, end)));
+      new Uint8Array(mem.buffer, p, end)));
     process.exit(1);
   }
-  console.log('engine wasm self-test: PASS (kernels + 65536-pattern widen + scalar fallback)');
+  console.log(`engine wasm self-test: PASS (kernels + 65536-pattern widen + scalar fallback)${THREADS > 1 ? ` [+${THREADS - 1} host workers]` : ''}`);
+  for (const w of sharedWorkers) w.terminate();
   process.exit(0);
 }
 
-const wbytes = readFileSync(WASM);
-const t0 = performance.now();
-const { instance } = await WebAssembly.instantiate(wbytes, {
-  env: { now_ms: () => performance.now() },
-});
-const instantiateMs = performance.now() - t0;
+const { instance, instantiateMs } = await boot();
 const e = instance.exports;
-const linear = () => e.memory.buffer.byteLength;
+const mem = () => sharedMemory ?? e.memory;
+const linear = () => mem().buffer.byteLength;
 
 const result = {
   node: process.version,
-  wasm_bytes: wbytes.length,
+  wasm_bytes: readFileSync(WASM).length,
   instantiate_ms: +instantiateMs.toFixed(1),
+  threads: THREADS,
   model: MODEL,
   simd128: SIMD === '1',
   memory: {},
@@ -74,16 +188,16 @@ const result = {
 
 function putU32(arr) {
   const ptr = e.wasm_alloc_u32(arr.length) >>> 0;
-  new Uint32Array(e.memory.buffer, ptr, arr.length).set(arr);
+  new Uint32Array(mem().buffer, ptr, arr.length).set(arr);
   return ptr;
 }
 
 function lastError() {
   try {
     const p = e.wasm_last_error() >>> 0;
-    const end = new Uint8Array(e.memory.buffer, p, 4096).indexOf(0);
+    const end = new Uint8Array(mem().buffer, p, 4096).indexOf(0);
     return end > 0
-      ? new TextDecoder().decode(new Uint8Array(e.memory.buffer, p, end))
+      ? new TextDecoder().decode(new Uint8Array(mem().buffer, p, end))
       : null;
   } catch {
     return null;
@@ -94,7 +208,7 @@ function loadModel(id, ggufPath) {
   const buf = readFileSync(ggufPath);
   const t = performance.now();
   const ptr = e.wasm_alloc_u8(buf.length) >>> 0;
-  new Uint8Array(e.memory.buffer, ptr, buf.length).set(buf);
+  new Uint8Array(mem().buffer, ptr, buf.length).set(buf);
   const copyMs = performance.now() - t;
   const tl = performance.now();
   let rc;
@@ -129,9 +243,9 @@ function softmax(xs) {
 function readOuts(packed) {
   const nOut = Number(packed & 0xffffffffn);
   const nOut2 = Number(packed >> 32n);
-  const logits = Array.from(new Float32Array(e.memory.buffer, e.wasm_out_ptr() >>> 0, nOut));
+  const logits = Array.from(new Float32Array(mem().buffer, e.wasm_out_ptr() >>> 0, nOut));
   const act = nOut2
-    ? Array.from(new Float32Array(e.memory.buffer, e.wasm_out2_ptr() >>> 0, nOut2))
+    ? Array.from(new Float32Array(mem().buffer, e.wasm_out2_ptr() >>> 0, nOut2))
     : [];
   return { logits, act };
 }
@@ -248,7 +362,7 @@ function openthaiProbs(logitsRows, qs, temps) {
 function otTemps() {
   const tp = e.wasm_alloc_u32(3) >>> 0;
   e.wasm_openthai_temps(tp);
-  const t = Array.from(new Float32Array(e.memory.buffer, tp, 3));
+  const t = Array.from(new Float32Array(mem().buffer, tp, 3));
   e.wasm_free_u32(tp, 3);
   return t;
 }
