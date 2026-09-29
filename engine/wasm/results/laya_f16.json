@@ -1,7 +1,8 @@
 {
   "node": "v22.22.3",
-  "wasm_bytes": 342385,
-  "instantiate_ms": 1,
+  "wasm_bytes": 330995,
+  "instantiate_ms": 1.3,
+  "threads": 1,
   "model": "laya",
   "simd128": true,
   "memory": {
@@ -19,11 +20,11 @@
       "load": {
         "gguf": "../../models/laya_english_f16.gguf",
         "gguf_bytes": 846137888,
-        "copy_ms": 299.1,
-        "parse_ms": 15.9,
-        "build_ms": 378.3,
-        "load_inside_ms": 394.3,
-        "load_wall_ms": 668.2,
+        "copy_ms": 555.9,
+        "parse_ms": 17.9,
+        "build_ms": 10212.6,
+        "load_inside_ms": 10230.5,
+        "load_wall_ms": 10549.5,
         "linear_after_load": 1697251328,
         "live_alloc_after_load": 845901848,
         "peak_alloc_after_load": 1694346816
@@ -32,44 +33,44 @@
         "warmup": 1,
         "repeats": 5,
         "inside_ms": [
-          1503.8,
-          1503.8,
-          1510.7,
-          1529.9,
-          1634.1
+          1743.6,
+          1747.8,
+          1723.7,
+          1742.5,
+          1716.8
         ],
         "wall_ms": [
-          1503.8,
-          1503.8,
-          1510.7,
-          1530,
-          1634.1
+          1743.6,
+          1747.9,
+          1723.7,
+          1743.1,
+          1716.9
         ],
-        "mean_inside_ms": 1536.4600000000003,
+        "mean_inside_ms": 1734.8799999999999,
         "trapped": null
       },
       "drift_vs_native": {
         "n": 2,
-        "max_dlogit": 2.384185791015625e-7,
-        "rms_dlogit": 2.384185791015625e-7,
+        "max_dlogit": 9.5367431640625e-7,
+        "rms_dlogit": 7.202056630608185e-7,
         "drift_act": {
           "n": 2,
-          "max_dlogit": 0.0009765625,
-          "rms_dlogit": 0.0007720404443770458
+          "max_dlogit": 0.00146484375,
+          "rms_dlogit": 0.00146484375
         },
-        "dp_after_temp": 0
+        "dp_after_temp": 2.914095142969586e-8
       },
       "engine_ref": {
-        "noul": 0.8911915421485901,
-        "p_true": 0.8911915421485901
+        "noul": 0.8911914825439453,
+        "p_true": 0.8911914825439453
       },
       "logits": [
-        -2.876319408416748,
-        1.2947114706039429
+        -2.87631893157959,
+        1.2947109937667847
       ],
       "act_logits": [
-        4293.92333984375,
-        -3514.60205078125
+        4293.92431640625,
+        -3514.60302734375
       ]
     }
   ]

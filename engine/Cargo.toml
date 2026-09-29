@@ -25,6 +25,11 @@ unicode-general-category = "=1.1.0"
 
 memmap2 = "0.9"
 
+# Shared SIMD kernels and numeric types from the katgpt stack
+# (see wayfinder/research/katgpt-rs-capability-index.md). Leaf crate — wasm32-clean,
+# zero katgpt-* deps.
+katgpt-types = { path = "../../katgpt-rs/crates/katgpt-types", default-features = false }
+
 [profile.dev]
 panic = "abort"
 [profile.release]

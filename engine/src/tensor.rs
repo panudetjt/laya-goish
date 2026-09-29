@@ -1083,11 +1083,17 @@ pub fn gelu(x: f32) -> f32 {
     0.5 * x * (1. + libm::tanhf(0.7978845608028654 * x * (1. + 0.044715 * x * x)))
 }
 pub fn softmax(x: &[f32]) -> Vec<f32> {
+    if x.is_empty() {
+        return Vec::new();
+    }
     let m = x.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    let mut p: Vec<_> = x.iter().map(|v| libm::expf(v - m)).collect();
-    let sum = p.iter().sum::<f32>();
-    for v in &mut p {
-        *v /= sum
+    let mut p: Vec<f32> = x.iter().map(|v| v - m).collect();
+    let sum = katgpt_types::simd::simd_exp_sum_inplace(&mut p);
+    if sum > 0.0 {
+        let inv = 1.0 / sum;
+        for v in &mut p {
+            *v *= inv;
+        }
     }
     p
 }

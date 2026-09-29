@@ -1,6 +1,6 @@
 {
   "node": "v22.22.3",
-  "wasm_bytes": 342383,
+  "wasm_bytes": 330995,
   "instantiate_ms": 1,
   "threads": 1,
   "model": "laya",
@@ -20,11 +20,11 @@
       "load": {
         "gguf": "../../models/laya_english_f16.gguf",
         "gguf_bytes": 846137888,
-        "copy_ms": 301.6,
-        "parse_ms": 15.5,
-        "build_ms": 380.5,
-        "load_inside_ms": 396,
-        "load_wall_ms": 677.5,
+        "copy_ms": 380.3,
+        "parse_ms": 19.3,
+        "build_ms": 657.8,
+        "load_inside_ms": 677.2,
+        "load_wall_ms": 968,
         "linear_after_load": 1697251328,
         "live_alloc_after_load": 845901848,
         "peak_alloc_after_load": 1694346816
@@ -33,36 +33,36 @@
         "warmup": 0,
         "repeats": 1,
         "inside_ms": [
-          1832.8
+          1953.4
         ],
         "wall_ms": [
-          1832.9
+          1953.5
         ],
-        "mean_inside_ms": 1832.8,
+        "mean_inside_ms": 1953.4,
         "trapped": null
       },
       "drift_vs_native": {
         "n": 2,
-        "max_dlogit": 2.384185791015625e-7,
-        "rms_dlogit": 2.384185791015625e-7,
+        "max_dlogit": 7.152557373046875e-7,
+        "rms_dlogit": 5.331201499700045e-7,
         "drift_act": {
           "n": 2,
-          "max_dlogit": 0.0009765625,
-          "rms_dlogit": 0.0007720404443770458
+          "max_dlogit": 0.00048828125,
+          "rms_dlogit": 0.00034526698300124393
         },
-        "dp_after_temp": 0
+        "dp_after_temp": 4.662550789902298e-8
       },
       "engine_ref": {
         "noul": 0.8911915421485901,
         "p_true": 0.8911915421485901
       },
       "logits": [
-        -2.876319408416748,
-        1.2947114706039429
+        -2.87631893157959,
+        1.2947109937667847
       ],
       "act_logits": [
-        4293.92333984375,
-        -3514.60205078125
+        4293.92431640625,
+        -3514.60302734375
       ]
     }
   ]
