@@ -133,6 +133,7 @@ dependencies = [
 name = "laya-engine"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "katgpt-types",
  "libm",
  "memmap2",

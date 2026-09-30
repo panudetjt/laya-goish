@@ -30,6 +30,14 @@ fn main() {
     }
 }
 fn run() -> Result<(), String> {
+    // Ticket-18 kernel variant A/B: LAYA_AARCH64_KERNEL={scalar,fcvt,fmlal,sdot}.
+    // Explicit selection is honored verbatim (an unavailable-feature variant
+    // would SIGILL — the requester owns that); the default stays the portable
+    // FCVT path until the M1 A/B table promotes a variant.
+    #[cfg(target_arch = "aarch64")]
+    if let Ok(name) = std::env::var("LAYA_AARCH64_KERNEL") {
+        tensor::set_aarch64_kernel(&name)?;
+    }
     let a = io::args();
     if a.len() < 2 || a[1] == "help" || a[1] == "--help" {
         io::out("Laya GGUF / std Rust\n  laya info MODEL\n  laya tokenize MODEL --text TEXT\n  laya decide MODEL --request FILE [--threads N] [--raw]\n  laya decide MODEL --preset email --text TEXT\n  laya list-presets\n  laya daemon MODEL [--threads N]\n  laya serve MODEL [--model MODEL ...] [--default-model NAME] [--host 127.0.0.1] [--port 8080] [--threads N]\n  laya self-test");

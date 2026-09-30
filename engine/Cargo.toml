@@ -30,6 +30,16 @@ memmap2 = "0.9"
 # zero katgpt-* deps.
 katgpt-types = { path = "../../katgpt-rs/crates/katgpt-types", default-features = false }
 
+# blake3 (via katgpt-types) compiles C/asm by default on x86_64 (SSE/AVX via
+# cc, MSVC ml64) and aarch64 (C NEON) — the engine's first C-code dependency,
+# which broke the C-less cross tier everywhere (no cross assemblers on the
+# dev machine; ticket 18 CI: musl + drift + cross FAIL). `pure` pins blake3
+# to its portable Rust implementation on every target (build.rs routes pure
+# to Rust intrinsics / nothing); it is off the inference hot path (artifact
+# receipts only), so the SIMD loss is irrelevant. Upstream keeps its own
+# defaults.
+blake3 = { version = "1", default-features = false, features = ["std", "pure"] }
+
 [profile.dev]
 panic = "abort"
 [profile.release]

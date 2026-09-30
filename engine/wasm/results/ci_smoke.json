@@ -1,6 +1,6 @@
 {
   "node": "v22.22.3",
-  "wasm_bytes": 330191,
+  "wasm_bytes": 330915,
   "instantiate_ms": 1.1,
   "threads": 1,
   "model": "laya",
@@ -20,11 +20,11 @@
       "load": {
         "gguf": "/home/jame/work/my-project/laya-goish/models/laya_english_f16.gguf",
         "gguf_bytes": 846137888,
-        "copy_ms": 281.1,
-        "parse_ms": 20.5,
-        "build_ms": 397.1,
-        "load_inside_ms": 417.6,
-        "load_wall_ms": 685.9,
+        "copy_ms": 12067.2,
+        "parse_ms": 68.2,
+        "build_ms": 25264.6,
+        "load_inside_ms": 25332.8,
+        "load_wall_ms": 25725.7,
         "linear_after_load": 1697251328,
         "live_alloc_after_load": 845901848,
         "peak_alloc_after_load": 1694346816
@@ -33,36 +33,36 @@
         "warmup": 0,
         "repeats": 1,
         "inside_ms": [
-          1726.8
+          2630.5
         ],
         "wall_ms": [
-          1726.9
+          2631.2
         ],
-        "mean_inside_ms": 1726.8,
+        "mean_inside_ms": 2630.5,
         "trapped": null
       },
       "drift_vs_native": {
         "n": 2,
-        "max_dlogit": 2.384185791015625e-7,
-        "rms_dlogit": 2.384185791015625e-7,
+        "max_dlogit": 7.152557373046875e-7,
+        "rms_dlogit": 5.331201499700045e-7,
         "drift_act": {
           "n": 2,
-          "max_dlogit": 0.0009765625,
-          "rms_dlogit": 0.0007720404443770458
+          "max_dlogit": 0.00048828125,
+          "rms_dlogit": 0.00034526698300124393
         },
-        "dp_after_temp": 0
+        "dp_after_temp": 4.662550789902298e-8
       },
       "engine_ref": {
         "noul": 0.8911915421485901,
         "p_true": 0.8911915421485901
       },
       "logits": [
-        -2.876319408416748,
-        1.2947114706039429
+        -2.87631893157959,
+        1.2947109937667847
       ],
       "act_logits": [
-        4293.92333984375,
-        -3514.60205078125
+        4293.92431640625,
+        -3514.60302734375
       ]
     }
   ]

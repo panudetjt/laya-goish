@@ -5,8 +5,10 @@ use core::arch::aarch64::*;
 use core::arch::wasm32::*;
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
-#[cfg(any(target_arch = "wasm32", target_arch = "aarch64"))]
+#[cfg(target_arch = "wasm32")]
 use core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(target_arch = "aarch64")]
+use core::sync::atomic::{AtomicU8, Ordering};
 pub enum Storage {
     F32(Vec<f32>),
     F16(Vec<u8>),
@@ -241,7 +243,7 @@ unsafe fn kernel(
     c1: usize,
     m: usize,
 ) {
-    if NEON.load(Ordering::Relaxed) {
+    if NEON.load(Ordering::Relaxed) != NEON_SCALAR {
         kernel_neon(xp, wp, kind, op, bp, k, n, c0, c1, m);
     } else {
         kernel_scalar(xp, wp, kind, op, bp, k, n, c0, c1, m);
@@ -332,12 +334,73 @@ unsafe fn kernel(
 // keeps the scalar fallback selectable for A/B measurement, mirroring the
 // wasm tier's switch.
 #[cfg(target_arch = "aarch64")]
-static NEON: AtomicBool = AtomicBool::new(true);
+static NEON: AtomicU8 = AtomicU8::new(NEON_FCVT);
+
+// Kernel variants (wayfinder ticket 18). MODE_FCVT is the ticket-17 portable
+// ARMv8-A baseline (FCVT dequant + vfmaq grid); MODE_FMLAL (FEAT_FHM, ARMv8.2
+// — Apple M1+) computes F16 matmuls with the fused half-precision FMA-long
+// (f16×f16→f32 in one instruction, no FCVT on the inner loop; activations are
+// pre-narrowed to f16 per row block — a per-term relative error of 2^-11 vs
+// the F32 activations, single rounding on the add unchanged) — the technique
+// katgpt-rs Issue-201 measured as the one that breaks the f32 GEMV ceiling
+// on Apple Silicon, lifted per the T2 rule into laya's own substrate.
+// MODE_SDOT (FEAT_DOTPROD, ARMv8.2) computes Q8_0 matmuls with i8×i8→i32 dot
+// products against per-32-block quantized activations (the llama.cpp-style
+// arithmetic), replacing the widen-chain dequant on the inner loop. Both are
+// A/B variants, never the default: their outputs differ from the scalar
+// reference beyond lane reassociation, so adoption is gated on the M1 drift
+// table (rule 3 of the katgpt capability index), selected via
+// LAYA_AARCH64_KERNEL={scalar,fcvt,fmlal,sdot}.
+#[cfg(target_arch = "aarch64")]
+pub const NEON_SCALAR: u8 = 0;
+#[cfg(target_arch = "aarch64")]
+pub const NEON_FCVT: u8 = 1;
+#[cfg(target_arch = "aarch64")]
+pub const NEON_FMLAL: u8 = 2;
+#[cfg(target_arch = "aarch64")]
+pub const NEON_SDOT: u8 = 3;
+
+/// Force a specific aarch64 kernel variant (A/B switch; default NEON_FCVT).
+/// Selection is trusted verbatim — requesting NEON_FMLAL on a non-FHM CPU
+/// would SIGILL, so only the env/self-test surfaces name variants.
+#[cfg(target_arch = "aarch64")]
+pub fn set_aarch64_neon_mode(mode: u8) {
+    NEON.store(mode, Ordering::Relaxed);
+}
 
 /// Force the scalar kernel on/off on aarch64 (A/B switch; default on).
 #[cfg(target_arch = "aarch64")]
 pub fn set_aarch64_neon(on: bool) {
-    NEON.store(on, Ordering::Relaxed);
+    set_aarch64_neon_mode(if on { NEON_FCVT } else { NEON_SCALAR });
+}
+
+/// Map a LAYA_AARCH64_KERNEL variant name; unknown names error out.
+#[cfg(target_arch = "aarch64")]
+pub fn set_aarch64_kernel(name: &str) -> Result<(), String> {
+    match name {
+        "scalar" => set_aarch64_neon_mode(NEON_SCALAR),
+        "fcvt" => set_aarch64_neon_mode(NEON_FCVT),
+        "fmlal" => set_aarch64_neon_mode(NEON_FMLAL),
+        "sdot" => set_aarch64_neon_mode(NEON_SDOT),
+        other => return Err(format!("unknown LAYA_AARCH64_KERNEL: {other}")),
+    }
+    Ok(())
+}
+
+/// Active aarch64 kernel variant (self-test tolerance selection).
+#[cfg(target_arch = "aarch64")]
+fn aarch64_neon_mode() -> u8 {
+    NEON.load(Ordering::Relaxed)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn fhm_available() -> bool {
+    std::arch::is_aarch64_feature_detected!("fhm")
+}
+
+#[cfg(target_arch = "aarch64")]
+fn dotprod_available() -> bool {
+    std::arch::is_aarch64_feature_detected!("dotprod")
 }
 
 // The FCVT instructions ARE baseline NEON (`vcvt_f32_f16` /
@@ -371,6 +434,86 @@ unsafe fn fcvtl4(v: uint16x4_t) -> float32x4_t {
     out
 }
 
+// Ticket-18 variant instruction wrappers — same stable-asm pattern as the
+// FCVT wrappers above (the stdarch_neon_f16 intrinsics are nightly-only):
+// fcvtn8 narrows 8 f32 lanes to 8 f16 halfs with round-to-nearest-even
+// (FCVTN low half + FCVTN2 high half — the hardware f32→f16 analog of the
+// f16→f32 FCVTL pair); fmlalq/fmlal2q are the FEAT_FHM fused half-precision
+// FMA-long (f16×f16 products widened to f32, accumulated with a single
+// rounding — no separate FCVT on the inner loop); sdotq is the FEAT_DOTPROD
+// signed i8×i8→i32 4-way dot. All three are ARMv8.2-A: callers must have
+// confirmed the hwcaps (fhm / dotprod) or accepted the SIGILL risk.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn fcvtn8(lo: float32x4_t, hi: float32x4_t) -> uint16x8_t {
+    let out: uint16x8_t;
+    core::arch::asm!(
+        "fcvtn {out:v}.4h, {lo:v}.4s",
+        "fcvtn2 {out:v}.8h, {hi:v}.4s",
+        // out(vreg), not lateout: FCVTN writes out's low half before FCVTN2
+        // reads hi, so out must not share hi's register (lateout would allow it).
+        out = out(vreg) out,
+        lo = in(vreg) lo,
+        hi = in(vreg) hi
+    );
+    out
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn fmlalq(acc: float32x4_t, a: uint16x8_t, b: uint16x8_t) -> float32x4_t {
+    let out: float32x4_t;
+    core::arch::asm!(
+        "fmlal {out:v}.4s, {a:v}.4h, {b:v}.4h",
+        out = inout(vreg) acc => out,
+        a = in(vreg) a,
+        b = in(vreg) b
+    );
+    out
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn fmlal2q(acc: float32x4_t, a: uint16x8_t, b: uint16x8_t) -> float32x4_t {
+    let out: float32x4_t;
+    core::arch::asm!(
+        "fmlal2 {out:v}.4s, {a:v}.4h, {b:v}.4h",
+        out = inout(vreg) acc => out,
+        a = in(vreg) a,
+        b = in(vreg) b
+    );
+    out
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn sdotq(acc: int32x4_t, a: int8x16_t, b: int8x16_t) -> int32x4_t {
+    let out: int32x4_t;
+    core::arch::asm!(
+        "sdot {out:v}.4s, {a:v}.16b, {b:v}.16b",
+        out = inout(vreg) acc => out,
+        a = in(vreg) a,
+        b = in(vreg) b
+    );
+    out
+}
+
+/// Per-call variant state threaded into the feature loop: the narrowed /
+/// quantized activation panels for one 16-row block and their geometry. The
+/// panels are c-independent (they are functions of x alone), so they are
+/// rebuilt once per (feature tile, row block) and amortized across every
+/// column of the tile; the f32 tail beyond the panel (k % 16 for fmlal,
+/// k % 32 for sdot) is never stored — the shared scalar tail reads raw x.
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy)]
+struct APanel {
+    variant: u8,
+    xh: usize,   // *const u16 — f16-narrowed activations (fmlal, F16 weights)
+    xq: usize,   // *const u8 — i8-quantized activations (sdot, Q8_0 weights)
+    xs: usize,   // *const f32 — per-(row, 32-block) scales (sdot)
+    nblk: usize, // full 32-blocks per row (sdot)
+}
+
 #[cfg(target_arch = "aarch64")]
 #[inline(never)]
 #[target_feature(enable = "neon")]
@@ -389,24 +532,67 @@ unsafe fn kernel_neon(
     let x = xp as *const f32;
     let o = op as *mut f32;
     let bias = bp as *const f32;
-    // Row blocks of up to 12 tokens amortize each streamed weight load
-    // across 12 rows (12 f32x4 accumulators — 3 of gemm's 4-pack rows);
-    // the feature tiling above each block keeps the streamed weight chunk
-    // L2-resident (see the section comment).
+    // Requested variant, degraded to the portable FCVT path when the CPU
+    // lacks the ARMv8.2 feature it needs (an explicit variant request via
+    // set_aarch64_neon_mode is honored verbatim — SIGILL is the requester's).
+    let mut variant = NEON.load(Ordering::Relaxed);
+    if variant == NEON_FMLAL && !fhm_available() {
+        variant = NEON_FCVT;
+    }
+    if variant == NEON_SDOT && !dotprod_available() {
+        variant = NEON_FCVT;
+    }
+    // Row blocks of up to 16 tokens amortize each streamed weight load
+    // across 16 rows (16 f32x4 accumulators — gemm's full MR budget for the
+    // NEON grid; the ticket-17 kernel used 12, three of gemm's 4-pack rows).
+    // The per-element summation order is unchanged, so 16-row blocking is
+    // bit-identical to 12-row: pure scheduling. The feature tiling above
+    // each block keeps the streamed weight chunk L2-resident (see the
+    // section comment).
     let wb = match kind {
         1 => k * 2,
         8 => k * 34 / 32,
         _ => k * 4,
     };
     let tile = (262144 / wb).clamp(1, 512);
+    let f16_panel = variant == NEON_FMLAL && kind == 1;
+    let q8_panel = variant == NEON_SDOT && kind == 8;
+    let nblk = k / 32;
+    let mut xh: Vec<u16> = if f16_panel {
+        vec![0; 16 * k]
+    } else {
+        Vec::new()
+    };
+    let mut xq: Vec<u8> = if q8_panel {
+        vec![0; 16 * nblk * 32]
+    } else {
+        Vec::new()
+    };
+    let mut xs: Vec<f32> = if q8_panel {
+        vec![0.; 16 * nblk]
+    } else {
+        Vec::new()
+    };
+    let panel = APanel {
+        variant,
+        xh: xh.as_ptr() as usize,
+        xq: xq.as_ptr() as usize,
+        xs: xs.as_ptr() as usize,
+        nblk,
+    };
     let mut ct = c0;
     while ct < c1 {
         let ce = (ct + tile).min(c1);
         let mut r = 0;
         while r < m {
-            let nr = (m - r).min(12);
+            let nr = (m - r).min(16);
+            if f16_panel {
+                narrow_panel(x, k, r, nr, xh.as_mut_ptr());
+            } else if q8_panel {
+                quantize_panel(x, k, r, nr, nblk, xq.as_mut_ptr(), xs.as_mut_ptr());
+            }
             for c in ct..ce {
-                ndispatch(x, wp, kind, o, bias, bp, k, n, c, r, nr);
+                ndispatch(x, panel, wp, kind, o, bias, bp, k, n, c, r, nr);
             }
             r += nr;
         }
@@ -414,10 +600,115 @@ unsafe fn kernel_neon(
     }
 }
 
+/// Narrow one 16-row block's activations to f16 (hardware FCVTN, RNE —
+/// 8 f32 per 2-instruction pair), the preprocess the FMLAL path folds into
+/// its fused FMA-long. Per-term relative error vs the f32 activations:
+/// 2^-11; everything else (weights already f16, f32 accumulate, per-lane
+/// FMA order) is unchanged from the FCVT path.
+#[cfg(target_arch = "aarch64")]
+unsafe fn narrow_panel(x: *const f32, k: usize, r: usize, nr: usize, xh: *mut u16) {
+    for t in 0..nr {
+        let src = x.add((r + t) * k);
+        let dst = xh.add(t * k);
+        let mut j = 0;
+        while j + 8 <= k {
+            let lo = vld1q_f32(src.add(j));
+            let hi = vld1q_f32(src.add(j + 4));
+            vst1q_u16(dst.add(j), fcvtn8(lo, hi));
+            j += 8;
+        }
+    }
+}
+
+/// Hand f32→f16 round-to-nearest-even scalar reference (self-test only) —
+/// the hardware FCVTN must match it bit-for-bit on every non-NaN input, the
+/// way the inbound FCVTL matches gguf::half. NaNs keep sign + truncated
+/// payload; hardware additionally quiets signaling NaNs, so NaN cases are
+/// compared NaN-aware by the caller.
+#[cfg(target_arch = "aarch64")]
+fn f32_to_f16_rne(v: f32) -> u16 {
+    let b = v.to_bits();
+    let sign = ((b >> 16) & 0x8000) as u16;
+    if v.is_nan() {
+        return sign | 0x7e00 | ((b >> 13) & 0x3ff) as u16;
+    }
+    if v.is_infinite() {
+        return sign | 0x7c00;
+    }
+    let exp = ((b >> 23) & 0xff) as i32 - 127;
+    let man = b & 0x007f_ffff;
+    if exp > 15 {
+        return sign | 0x7c00; // overflow → ±inf
+    }
+    if exp >= -14 {
+        let mut h = man >> 13;
+        let rem = man & 0x1fff;
+        if rem > 0x1000 || (rem == 0x1000 && h & 1 == 1) {
+            h += 1;
+        }
+        let (e, h) = if h == 0x400 { (exp + 1, 0) } else { (exp, h) };
+        if e > 15 {
+            return sign | 0x7c00; // mantissa carry overflowed to inf
+        }
+        return sign | (((e + 15) as u16) << 10) | h as u16;
+    }
+    if exp < -25 {
+        return sign; // below half the smallest subnormal quantum
+    }
+    // Subnormal: value = (1<<23 | man) · 2^(exp-23), quantum 2^-24 →
+    // N = RNE((1<<23 | man) · 2^(exp+1)); the RNE carry into 0x400 IS the
+    // min normal (2^-14) — a valid f16, no special case.
+    let m24 = man | 0x0080_0000;
+    let sh = (-1 - exp) as u32;
+    let mut n = m24 >> sh;
+    let rem = m24 & ((1u32 << sh) - 1);
+    let half = 1u32 << (sh - 1);
+    if rem > half || (rem == half && n & 1 == 1) {
+        n += 1;
+    }
+    sign | n as u16
+}
+
+/// Quantize one 16-row block's activations to per-32-block i8 + scale (the
+/// llama.cpp-style preprocess the SDOT path needs). Per-element absolute
+/// error vs the f32 activations: amax/254 of the row block; the i32 block
+/// dot itself is exact, so the block scale product carries all error.
+#[cfg(target_arch = "aarch64")]
+unsafe fn quantize_panel(
+    x: *const f32,
+    k: usize,
+    r: usize,
+    nr: usize,
+    nblk: usize,
+    xq: *mut u8,
+    xs: *mut f32,
+) {
+    for t in 0..nr {
+        let src = x.add((r + t) * k);
+        for blk in 0..nblk {
+            let s = src.add(blk * 32);
+            let mut amax = 0f32;
+            for i in 0..32 {
+                amax = amax.max((*s.add(i)).abs());
+            }
+            let d = amax / 127.;
+            *xs.add(t * nblk + blk) = d;
+            let dst = xq.add(t * nblk * 32 + blk * 32);
+            for i in 0..32 {
+                // d == 0 (all-zero block) casts NaN to 0 — the block scale is
+                // 0 either way, so the block contributes nothing.
+                let q = ((*s.add(i)) / d).round().clamp(-127., 127.) as i32;
+                *dst.add(i) = q as u8;
+            }
+        }
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 unsafe fn ndispatch(
     x: *const f32,
+    panel: APanel,
     wp: usize,
     kind: u32,
     o: *mut f32,
@@ -430,29 +721,121 @@ unsafe fn ndispatch(
     nr: usize,
 ) {
     match nr {
-        12 => nblock::<12>(x, wp, kind, o, bias, bp, k, n, c, r),
-        11 => nblock::<11>(x, wp, kind, o, bias, bp, k, n, c, r),
-        10 => nblock::<10>(x, wp, kind, o, bias, bp, k, n, c, r),
-        9 => nblock::<9>(x, wp, kind, o, bias, bp, k, n, c, r),
-        8 => nblock::<8>(x, wp, kind, o, bias, bp, k, n, c, r),
-        7 => nblock::<7>(x, wp, kind, o, bias, bp, k, n, c, r),
-        6 => nblock::<6>(x, wp, kind, o, bias, bp, k, n, c, r),
-        5 => nblock::<5>(x, wp, kind, o, bias, bp, k, n, c, r),
-        4 => nblock::<4>(x, wp, kind, o, bias, bp, k, n, c, r),
-        3 => nblock::<3>(x, wp, kind, o, bias, bp, k, n, c, r),
-        2 => nblock::<2>(x, wp, kind, o, bias, bp, k, n, c, r),
-        _ => nblock::<1>(x, wp, kind, o, bias, bp, k, n, c, r),
+        16 => nblock::<16>(x, panel, wp, kind, o, bias, bp, k, n, c, r),
+        15 => nblock::<15>(x, panel, wp, kind, o, bias, bp, k, n, c, r),
+        14 => nblock::<14>(x, panel, wp, kind, o, bias, bp, k, n, c, r),
+        13 => nblock::<13>(x, panel, wp, kind, o, bias, bp, k, n, c, r),
+        12 => nblock::<12>(x, panel, wp, kind, o, bias, bp, k, n, c, r),
+        11 => nblock::<11>(x, panel, wp, kind, o, bias, bp, k, n, c, r),
+        10 => nblock::<10>(x, panel, wp, kind, o, bias, bp, k, n, c, r),
+        9 => nblock::<9>(x, panel, wp, kind, o, bias, bp, k, n, c, r),
+        8 => nblock::<8>(x, panel, wp, kind, o, bias, bp, k, n, c, r),
+        7 => nblock::<7>(x, panel, wp, kind, o, bias, bp, k, n, c, r),
+        6 => nblock::<6>(x, panel, wp, kind, o, bias, bp, k, n, c, r),
+        5 => nblock::<5>(x, panel, wp, kind, o, bias, bp, k, n, c, r),
+        4 => nblock::<4>(x, panel, wp, kind, o, bias, bp, k, n, c, r),
+        3 => nblock::<3>(x, panel, wp, kind, o, bias, bp, k, n, c, r),
+        2 => nblock::<2>(x, panel, wp, kind, o, bias, bp, k, n, c, r),
+        _ => nblock::<1>(x, panel, wp, kind, o, bias, bp, k, n, c, r),
     }
+}
+
+/// F16-weight accumulate via the fused half-precision FMA-long (FEAT_FHM):
+/// the FCVT is gone from the inner loop (fmlal/fmlal2 widen inside the FMA)
+/// and the activation loads are half width — the two M1 pressure points the
+/// FCVT path pays. Lane structure matches the vfmaq grid exactly (lane i
+/// accumulates elements ≡ i mod 4 within each 16-step). ARMv8.2: the asm
+/// only assembles inside this fn's feature context; SAFETY — the caller must
+/// have verified FEAT_FHM (kernel_neon's hwcaps check / explicit override).
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon,fhm")]
+unsafe fn nblock_fmlal<const NR: usize>(
+    xh: *const u16,
+    wp: usize,
+    base: usize,
+    k: usize,
+    r: usize,
+) -> ([float32x4_t; NR], usize) {
+    let mut a = [vdupq_n_f32(0.); NR];
+    let mut j = 0;
+    while j + 16 <= k {
+        let w0h = vld1q_u16((wp + (base + j) * 2) as *const u16);
+        let w1h = vld1q_u16((wp + (base + j + 8) * 2) as *const u16);
+        for t in 0..NR {
+            let x0 = vld1q_u16(xh.add(t * k + j));
+            let x1 = vld1q_u16(xh.add(t * k + j + 8));
+            a[t] = fmlal2q(
+                fmlalq(fmlal2q(fmlalq(a[t], x0, w0h), x0, w0h), x1, w1h),
+                x1,
+                w1h,
+            );
+        }
+        j += 16;
+    }
+    while j + 8 <= k {
+        let w0h = vld1q_u16((wp + (base + j) * 2) as *const u16);
+        for t in 0..NR {
+            let x0 = vld1q_u16(xh.add(t * k + j));
+            a[t] = fmlal2q(fmlalq(a[t], x0, w0h), x0, w0h);
+        }
+        j += 8;
+    }
+    (a, j)
+}
+
+/// Q8_0-weight accumulate via signed i8×i8→i32 dot products (FEAT_DOTPROD):
+/// per 32-block, two SDOTs per row (exact in i32 — |q| ≤ 127, 8 products per
+/// lane), then one f32 FMA of the widened lanes with the d_w · d_x block
+/// scale. Replaces the widen-chain dequant (24 ops per block) and the f32
+/// activation loads with 2-byte i8 loads. SAFETY — caller must have verified
+/// FEAT_DOTPROD.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon,dotprod")]
+unsafe fn nblock_sdot<const NR: usize>(
+    xq: *const u8,
+    xs: *const f32,
+    nblk: usize,
+    wp: usize,
+    base: usize,
+    r: usize,
+) -> ([float32x4_t; NR], usize) {
+    let mut a = [vdupq_n_f32(0.); NR];
+    for blk in 0..nblk {
+        let off = wp + ((base + blk * 32) / 32) * 34;
+        let d = crate::gguf::half(u16::from_le_bytes([
+            *(off as *const u8),
+            *((off + 1) as *const u8),
+        ]));
+        let qw0 = vld1q_s8((off + 2) as *const i8);
+        let qw1 = vld1q_s8((off + 18) as *const i8);
+        for t in 0..NR {
+            let qp = xq.add(t * nblk * 32 + blk * 32) as *const i8;
+            let s = sdotq(
+                sdotq(vdupq_n_s32(0), qw0, vld1q_s8(qp)),
+                qw1,
+                vld1q_s8(qp.add(16)),
+            );
+            let scale = vdupq_n_f32(d * *xs.add(t * nblk + blk));
+            a[t] = vfmaq_f32(a[t], scale, vcvtq_f32_s32(s));
+        }
+    }
+    (a, nblk * 32)
 }
 
 /// aarch64 mirror of the x86-64/wasm32 block: one weight-column product for
 /// NR token rows, dequant-on-load, per-row sequential horizontal sum
 /// (4-lane NEON: ((l0+l1)+l2)+l3 — the lane order differs from x86's 8-lane
-/// sum; the tolerance gate judges it), bias last.
+/// sum; the tolerance gate judges it), bias last. The ticket-18 variants
+/// swap the inner accumulate only: F16 weights under the FMLAL variant use
+/// the fused half-precision FMA-long against f16-narrowed activations;
+/// Q8_0 weights under the SDOT variant use signed i8×i8→i32 dots against
+/// per-32-block quantized activations (block scales carry the dequant).
+/// Both keep the f32 accumulator lane structure and the shared f32 tail.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 unsafe fn nblock<const NR: usize>(
     x: *const f32,
+    panel: APanel,
     wp: usize,
     kind: u32,
     o: *mut f32,
@@ -466,7 +849,23 @@ unsafe fn nblock<const NR: usize>(
     let mut a = [vdupq_n_f32(0.); NR];
     let base = c * k;
     let mut j = 0;
-    if kind == 8 {
+    if kind == 8 && panel.variant == NEON_SDOT {
+        // Feature-gated variant fns: the ARMv8.2 asm (fmlal/sdot) only
+        // assembles inside a fn whose target_feature list carries the
+        // extension, so each variant's accumulate loop lives in its own
+        // #[target_feature] fn — called only after the runtime hwcaps
+        // check in kernel_neon (or an explicit env override).
+        (a, j) = nblock_sdot::<NR>(
+            panel.xq as *const u8,
+            panel.xs as *const f32,
+            panel.nblk,
+            wp,
+            base,
+            r,
+        );
+    } else if kind == 1 && panel.variant == NEON_FMLAL {
+        (a, j) = nblock_fmlal::<NR>(panel.xh as *const u16, wp, base, k, r);
+    } else if kind == 8 {
         // Q8_0: per 32 values, an F16 scale then 32 signed 8-bit offsets;
         // two 16-byte NEON loads cover the 32 offsets exactly (block = 34 B).
         while j + 32 <= k {
@@ -1082,6 +1481,14 @@ pub fn add(x: &mut [f32], y: &[f32]) {
 pub fn gelu(x: f32) -> f32 {
     0.5 * x * (1. + libm::tanhf(0.7978845608028654 * x * (1. + 0.044715 * x * x)))
 }
+// x86-64 keeps the goish softmax verbatim: the katgpt fused exp+sum kernel
+// (6th-order Cephes) changes last-ulp results, breaching the 42-combo
+// bit-identity-vs-goish contract on this ISA (capability-index rule 3 —
+// enforced by the CI drift/musl tiers, first caught 2026-09-30). The
+// tolerance-gated ISAs (aarch64, wasm32 — cross-ISA is never bit-identical
+// there by map decision) take the katgpt kernel; if it ever earns its way
+// onto x86-64 it ships as a non-default A/B, never the default path.
+#[cfg(not(target_arch = "x86_64"))]
 pub fn softmax(x: &[f32]) -> Vec<f32> {
     if x.is_empty() {
         return Vec::new();
@@ -1094,6 +1501,16 @@ pub fn softmax(x: &[f32]) -> Vec<f32> {
         for v in &mut p {
             *v *= inv;
         }
+    }
+    p
+}
+#[cfg(target_arch = "x86_64")]
+pub fn softmax(x: &[f32]) -> Vec<f32> {
+    let m = x.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let mut p: Vec<_> = x.iter().map(|v| libm::expf(v - m)).collect();
+    let sum = p.iter().sum::<f32>();
+    for v in &mut p {
+        *v /= sum
     }
     p
 }
@@ -1202,7 +1619,7 @@ unsafe fn dot_kernel(a: *const f32, b: *const f32, n: usize) -> f32 {
 #[cfg(target_arch = "aarch64")]
 #[inline(never)]
 unsafe fn dot_kernel(a: *const f32, b: *const f32, n: usize) -> f32 {
-    if NEON.load(Ordering::Relaxed) {
+    if NEON.load(Ordering::Relaxed) != NEON_SCALAR {
         dot_neon(a, b, n)
     } else {
         dot_scalar(a, b, n)
@@ -1321,6 +1738,16 @@ pub fn self_test() -> Result<(), String> {
         rows: usize,
         label: &str,
     ) -> Result<(), String> {
+        check_tol(w, x, bias, rows, label, 1e-4)
+    }
+    fn check_tol(
+        w: &Matrix,
+        x: &[f32],
+        bias: Option<&[f32]>,
+        rows: usize,
+        label: &str,
+        tol: f32,
+    ) -> Result<(), String> {
         let cols = w.cols;
         let n = w.rows;
         for threads in [1usize, 2, 4, 16] {
@@ -1332,7 +1759,7 @@ pub fn self_test() -> Result<(), String> {
                     if let Some(b) = bias {
                         want += b[c];
                     }
-                    if (y[r * n + c] - want).abs() > 0.0001 {
+                    if (y[r * n + c] - want).abs() > tol {
                         return Err(format!("{label} matrix kernel mismatch"));
                     }
                 }
@@ -1375,7 +1802,12 @@ pub fn self_test() -> Result<(), String> {
     let xf: Vec<f32> = (0..13 * 17).map(|i| qv(i + 5)).collect();
     let bf = vec![0.25; 11];
     check(&wf, &xf, Some(&bf), 13, "F16")?;
-    check(&wf, &xf[..17].to_vec(), None, 1, "F16 single-row")?;
+    check(&wf, &xf[..17], None, 1, "F16 single-row")?;
+    // 19 rows cross the 16-row block boundary (second block r=16) — the
+    // variant panel buffers are block-relative and this is the arm that
+    // catches any regression to absolute row indexing there.
+    let xf19: Vec<f32> = (0..19 * 17).map(|i| qv(i + 5)).collect();
+    check(&wf, &xf19, Some(&bf), 19, "F16 19-row multi-block")?;
     let mut q8 = Vec::with_capacity(11 * 34);
     for blk in (0..32 * 11).step_by(32) {
         q8.extend_from_slice(&0x3800u16.to_le_bytes());
@@ -1390,8 +1822,20 @@ pub fn self_test() -> Result<(), String> {
     };
     let xq: Vec<f32> = (0..13 * 32).map(|i| qv(i + 5)).collect();
     let bq = vec![0.25; 11];
-    check(&wq, &xq, Some(&bq), 13, "Q8_0")?;
-    check(&wq, &xq[..32].to_vec(), None, 1, "Q8_0 single-row")?;
+    // The strict 1e-4 bar assumes the default kernel's arithmetic; a forced
+    // LAYA_AARCH64_KERNEL=sdot runs the quantized-activation variant here
+    // too — its own bar (0.3, bounded Σ|w|·amax/254 ≈ 0.24 on this data,
+    // measured 0.16) is what the SDOT arm below judges it by.
+    #[allow(unused_mut)]
+    let mut q8_tol = 1e-4;
+    #[cfg(target_arch = "aarch64")]
+    if aarch64_neon_mode() == NEON_SDOT {
+        q8_tol = 0.3;
+    }
+    check_tol(&wq, &xq, Some(&bq), 13, "Q8_0", q8_tol)?;
+    check_tol(&wq, &xq[..32], None, 1, "Q8_0 single-row", q8_tol)?;
+    let xq19: Vec<f32> = (0..19 * 32).map(|i| qv(i + 5)).collect();
+    check_tol(&wq, &xq19, Some(&bq), 19, "Q8_0 19-row multi-block", q8_tol)?;
     // With half-exact values the F16 and F32 kernels must agree bit-for-bit.
     let w32 = Matrix {
         cols: 17,
@@ -1455,6 +1899,9 @@ pub fn self_test() -> Result<(), String> {
     // kernel must stay correct with the tier switched off.
     #[cfg(target_arch = "aarch64")]
     {
+        // Every arm below flips the variant and must restore the entry one —
+        // a forced LAYA_AARCH64_KERNEL keeps labeling the whole run.
+        let entry_mode = aarch64_neon_mode();
         for h in 0..=u16::MAX {
             let b = [
                 h.to_le_bytes(),
@@ -1482,8 +1929,150 @@ pub fn self_test() -> Result<(), String> {
         }
         set_aarch64_neon(false);
         let scalar_ok = check(&w, &x, Some(&b), 9, "F32 scalar-fallback");
-        set_aarch64_neon(true);
+        set_aarch64_neon_mode(entry_mode);
         scalar_ok?;
+        // Ticket-18: the FCVTN f32→f16 narrowing (the FMLAL preprocess) must
+        // be round-to-nearest-even. Checked against the hand RNE reference on
+        // a targeted boundary set plus a deterministic sweep; NaNs compare
+        // NaN-aware (hardware quiets signaling NaNs, payload otherwise kept).
+        let probes: [u32; 22] = [
+            0x0000_0000, // +0
+            0x8000_0000, // -0
+            0x3f80_0000, // 1.0
+            0xbf80_0000, // -1.0
+            0x3fc0_0000, // 1.5
+            0x477f_f000, // 65504 — f16 max normal
+            0x477f_ffff, // just under 65536 — rounds to 65504
+            0x4780_0000, // 65536 — overflows to inf
+            0x7f7f_ffff, // f32 max — inf
+            0x3880_0000, // 2^-14 — min normal
+            0x387f_ffff, // just below 2^-14 — largest subnormal
+            0x3380_0000, // 2^-24 — subnormal quantum
+            0x3300_0000, // 2^-25 — half quantum → 0
+            0x3340_0000, // 1.5·2^-25 — tie → 0 (even)
+            0x337f_ffff, // just under 2^-24·2 — largest subnormal
+            0x3f80_1000, // 1.0 + 2^-11 — tie, even h → 1.0
+            0x3f80_3000, // 1.0 + 3·2^-11 — over half → up
+            0x3fa0_1000, // 1.25 + 2^-11 — tie, odd h → up
+            0x7f80_0000, // inf
+            0x7fc0_0000, // qNaN
+            0x7f80_0001, // sNaN (hardware quiets)
+            0xffc0_1234, // -qNaN with payload
+        ];
+        for p in probes {
+            let v = f32::from_bits(p);
+            let one = [v; 8];
+            let (lo, hi, got): (float32x4_t, float32x4_t, [u16; 8]);
+            unsafe {
+                lo = vld1q_f32(one.as_ptr());
+                hi = vld1q_f32(one.as_ptr().add(4));
+                got = core::mem::transmute::<uint16x8_t, [u16; 8]>(fcvtn8(lo, hi));
+            }
+            let want = f32_to_f16_rne(v);
+            let ok = if v.is_nan() {
+                got.iter()
+                    .all(|&g| (g & 0x7c00) == 0x7c00 && g & 0x3ff != 0)
+            } else {
+                got.iter().all(|&g| g == want)
+            };
+            if !ok {
+                return Err(format!("FCVTN f32->f16 mismatch at 0x{p:08x}"));
+            }
+        }
+        let mut s = 0x1234_5678u32;
+        let mut buf = [0f32; 8];
+        for _ in 0..125_000 {
+            for v in buf.iter_mut() {
+                s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                *v = f32::from_bits(match s & 3 {
+                    0 => s & 0x807f_ffff,                                // ±subnormal / zero
+                    1 => (s & 0x007f_ffff) | (((s >> 13) & 0xff) << 23), // all exponents
+                    2 => s & 0x3fff_ffff, // small normals, 2^-14 boundary zone
+                    _ => (s & 0x807f_ffff) | 0x3380_0000, // subnormal-quantum zone
+                });
+            }
+            let got: [u16; 8] = unsafe {
+                let lo = vld1q_f32(buf.as_ptr());
+                let hi = vld1q_f32(buf.as_ptr().add(4));
+                core::mem::transmute(fcvtn8(lo, hi))
+            };
+            for (i, &g) in got.iter().enumerate() {
+                let v = buf[i];
+                let want = f32_to_f16_rne(v);
+                let ok = if v.is_nan() {
+                    (g & 0x7c00) == 0x7c00 && g & 0x3ff != 0
+                } else {
+                    g == want
+                };
+                if !ok {
+                    return Err(format!(
+                        "FCVTN f32->f16 sweep mismatch at 0x{:08x}",
+                        v.to_bits()
+                    ));
+                }
+            }
+        }
+        crate::io::log(&format!(
+            "aarch64 kernel variants: fhm={} dotprod={}",
+            fhm_available() as u8,
+            dotprod_available() as u8
+        ));
+        // FMLAL variant (FEAT_FHM): f16-exact activations stay inside the
+        // default bar; arbitrary activations are bounded by the 2^-11
+        // per-term narrowing error (Σ|w·x|·2^-11 ≈ 5.5e-3 on this data —
+        // bar 0.02). Non-FHM CPUs skip the arm (the variant degrades at
+        // dispatch; self-test keeps the default path's guarantees).
+        if fhm_available() {
+            set_aarch64_neon_mode(NEON_FMLAL);
+            let exact = check(&wf, &xf, Some(&bf), 13, "F16 fmlal (exact halves)");
+            let exact19 = check(&wf, &xf19, Some(&bf), 19, "F16 fmlal 19-row multi-block");
+            let wf2 = Matrix {
+                cols: 17,
+                rows: 11,
+                storage: Storage::F16(
+                    (0..187)
+                        .map(|i| f32_to_f16_rne((i as f32 - 83.) / 71.))
+                        .flat_map(|h| h.to_le_bytes())
+                        .collect(),
+                ),
+            };
+            let xf2: Vec<f32> = (0..13 * 17).map(|i| (i as f32 - 71.) / 43.).collect();
+            let xf219: Vec<f32> = (0..19 * 17).map(|i| (i as f32 - 71.) / 43.).collect();
+            let narrow = check_tol(&wf2, &xf2, Some(&bf), 13, "F16 fmlal (narrowed acts)", 0.02);
+            let narrow19 = check_tol(
+                &wf2,
+                &xf219,
+                Some(&bf),
+                19,
+                "F16 fmlal 19-row (narrowed acts)",
+                0.02,
+            );
+            set_aarch64_neon_mode(entry_mode);
+            exact?;
+            exact19?;
+            narrow?;
+            narrow19?;
+        }
+        // SDOT variant (FEAT_DOTPROD): quantized activations — worst-case
+        // bound Σ|w|·amax/254 on this data ≈ 0.24 (w = ±int·0.5, amax 1.75);
+        // the fixed data errs far below it — bar 0.3.
+        if dotprod_available() {
+            set_aarch64_neon_mode(NEON_SDOT);
+            let q = check_tol(&wq, &xq, Some(&bq), 13, "Q8_0 sdot (quantized acts)", 0.3);
+            let q1 = check_tol(&wq, &xq[..32], None, 1, "Q8_0 sdot single-row", 0.3);
+            let q19 = check_tol(
+                &wq,
+                &xq19,
+                Some(&bq),
+                19,
+                "Q8_0 sdot 19-row multi-block",
+                0.3,
+            );
+            set_aarch64_neon_mode(entry_mode);
+            q?;
+            q1?;
+            q19?;
+        }
     }
     // Layer norm must be BIT-identical to the textbook scalar form (zero
     // drift is a hard requirement): widths exercise lanes and tails
