@@ -29,6 +29,7 @@
 # generic = ARMv8-A baseline+NEON; "apple-m1" turns on the chip's fp16/
 # dotprod codegen — our ARMv8.2 asm is runtime-gated either way), CANDLE=1.
 set -u
+set -o pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 ENGINE="$REPO/engine"
@@ -83,12 +84,17 @@ fi
 echo "=== stage 3: drift gates vs x86-64 reference dumps (per variant) ==="
 DPASS=0; DFAIL=0
 drift_case() { # drift_case MODEL REFNAME REQFILE LABEL VARIANT
-    # macOS ships bash 3.2: "${envs[@]}" on an empty array trips set -u, so
-    # guard the expansion.
+    # env takes NAME=value directly — no -e flag (BSD/GNU env reject it;
+    # the M1 run #1 lost every non-fcvt decide to `env: illegal option`).
     local envs=()
-    [ "$5" != "fcvt" ] && envs=(-e "LAYA_AARCH64_KERNEL=$5")
-    env ${envs[@]+"${envs[@]}"} "$BIN" decide "$1" --request "$3" --raw --threads 4 \
-        > "$OUT/$5.$2.got.json" 2>/dev/null
+    [ "$5" != "fcvt" ] && envs=("LAYA_AARCH64_KERNEL=$5")
+    if ! env ${envs[@]+"${envs[@]}"} "$BIN" decide "$1" --request "$3" --raw --threads 4 \
+            > "$OUT/$5.$2.got.json" 2> "$OUT/$5.$2.got.err"; then
+        echo "FAIL: decide exited non-zero for $4 [$5] — stderr tail:"
+        tail -3 "$OUT/$5.$2.got.err" | sed 's/^/    /' | tee -a "$OUT/drift_summary.txt"
+        DFAIL=$((DFAIL+1)); FAILED=1
+        return
+    fi
     if python3 "$HERE/drift.py" "$OUT/$5.$2.got.json" "$HERE/reference/$2.json" \
         --label "$4 [$5]" | tee -a "$OUT/drift_summary.txt"; then
         DPASS=$((DPASS+1))
