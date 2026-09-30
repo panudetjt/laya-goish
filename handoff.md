@@ -29,24 +29,22 @@ ledger).
   softmax uses `simd_exp_sum_inplace` **on aarch64/wasm32 only** (see the
   rule-3 incident below). blake3 (transitive) pinned `pure` at our dep edge —
   the engine stays C-compiler-free on every target.
-- **Ticket 18: implementation complete + M1 run #1 done (2026-09-30)**.
-  aarch64 tier v2 = 16-row MR (default) + `fmlal`/`sdot` A/B variants
-  (`LAYA_AARCH64_KERNEL={scalar,fcvt,fmlal,sdot}`). M1 run #1 paste-back:
-  fcvt drift **6/6 PASS on hardware** (identical to the emu table — TCG is
-  an exact oracle), full bench table in ticket 18. **fmlal REJECTED**
-  (slower everywhere: Laya F16 t1 +25%, OT F16 t1 +50% — the FCVT was
-  already amortized by the 16-row grid; katgpt's Issue-201 premise doesn't
-  transfer). **sdot = 1.75× on OT Q8_0** (976.6 vs 1711.1 ms @ t8; now
-  beats OT F16) but stays non-default: Laya Q8_0 breaches the absolute
-  action-head dact bar under block-quantized activations (emu table) —
-  owner decision pending between (i) relative-dact criterion, (ii)
-  OpenThai-scoped sdot, (iii) research-only. **Remaining work**: re-run
-  `VARIANTS="fmlal sdot" bash engine/aarch64/run-m1.sh` on the M1 with the
-  FIXED script (run #1's drift stage lost every non-fcvt decide to an
-  `env -e` typo — BSD env rejects `-e`; bench numbers were valid) to get
-  the hardware drift rows, then the owner's scope decision closes 18.
-  run-m1.sh now checks decide's exit code, captures per-case stderr, and
-  sets pipefail.
+- **Ticket 18: implementation complete + M1 runs #1-#2 done (2026-09-30) —
+  owner decision closes it**. aarch64 tier v2 = 16-row MR (default) +
+  `fmlal`/`sdot` A/B variants (`LAYA_AARCH64_KERNEL={scalar,fcvt,fmlal,sdot}`).
+  Hardware drift matrix complete (runs #1-#2) and identical to the emu
+  everywhere they overlap. **fcvt 6/6 PASS on hardware — ships as default.**
+  **fmlal REJECTED** (slower everywhere + 3 Laya action-head dact breaches;
+  also revealed Q8_0 checkpoints store the action head as F16 — mixed-kind
+  models). **sdot: 5/6 — 1.77× on OT Q8_0 (965.4 ms @ t8, reproduced),
+  sole breach = Laya Q8_0 action-head dact 4.62 under block-quantized
+  activations.** Owner picks the sdot scope: (i) relative-dact criterion
+  (contract change), (ii) OpenThai Q8_0-scoped enablement (gate-clean
+  today; e.g. shipped OT artifacts recommend the env var), (iii)
+  research-only. On that pick, ticket 18 closes and ticket 20 unblocks.
+  run-m1.sh is fixed (env form, exit checks, stderr capture, pipefail —
+  run #1's drift stage lost every non-fcvt decide to an `env -e` typo).
+  Inherited optional item: `CANDLE=1`.
 
 ### The rule-3 incident (read this before touching kernels)
 
