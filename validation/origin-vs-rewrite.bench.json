@@ -1,0 +1,121 @@
+{
+ "date": "2026-09-30",
+ "machine": "i5-14400, 16 threads, WSL2, rustc 1.96",
+ "protocol": "daemon mode, 1 warmup + 8 measured, usage.latency_ms, request files: refund.json / openthai-thai.json",
+ "goish": {
+  "source": "origin/main @ 6dd3afc (goish alpha.14, fresh worktree build)"
+ },
+ "rewrite": {
+  "source": "feat/benchmark @ 50d8ad1 (engine/ via run.sh, -Ctarget-cpu=x86-64)"
+ },
+ "results": [
+  {
+   "model": "laya_f16",
+   "threads": 1,
+   "goish_mean_ms": 1170.0,
+   "goish_min_ms": 1113.0,
+   "rewrite_mean_ms": 574.6,
+   "rewrite_min_ms": 547.0,
+   "speedup_mean": 2.04
+  },
+  {
+   "model": "laya_f16",
+   "threads": 4,
+   "goish_mean_ms": 419.4,
+   "goish_min_ms": 389.0,
+   "rewrite_mean_ms": 210.1,
+   "rewrite_min_ms": 188.0,
+   "speedup_mean": 2.0
+  },
+  {
+   "model": "laya_f16",
+   "threads": 8,
+   "goish_mean_ms": 323.8,
+   "goish_min_ms": 312.0,
+   "rewrite_mean_ms": 188.2,
+   "rewrite_min_ms": 175.0,
+   "speedup_mean": 1.72
+  },
+  {
+   "model": "laya_f16",
+   "threads": 16,
+   "goish_mean_ms": 252.2,
+   "goish_min_ms": 234.0,
+   "rewrite_mean_ms": 179.4,
+   "rewrite_min_ms": 164.0,
+   "speedup_mean": 1.41
+  },
+  {
+   "model": "ot_f16",
+   "threads": 1,
+   "goish_mean_ms": 5412.0,
+   "goish_min_ms": 4977.0,
+   "rewrite_mean_ms": 2882.5,
+   "rewrite_min_ms": 2635.0,
+   "speedup_mean": 1.88
+  },
+  {
+   "model": "ot_f16",
+   "threads": 4,
+   "goish_mean_ms": 2129.5,
+   "goish_min_ms": 1993.0,
+   "rewrite_mean_ms": 1049.6,
+   "rewrite_min_ms": 909.0,
+   "speedup_mean": 2.03
+  },
+  {
+   "model": "ot_f16",
+   "threads": 8,
+   "goish_mean_ms": 1570.6,
+   "goish_min_ms": 1523.0,
+   "rewrite_mean_ms": 895.1,
+   "rewrite_min_ms": 845.0,
+   "speedup_mean": 1.75
+  },
+  {
+   "model": "ot_f16",
+   "threads": 16,
+   "goish_mean_ms": 1388.0,
+   "goish_min_ms": 1300.0,
+   "rewrite_mean_ms": 811.1,
+   "rewrite_min_ms": 759.0,
+   "speedup_mean": 1.71
+  },
+  {
+   "model": "ot_q8_0",
+   "threads": 1,
+   "goish_mean_ms": 5708.4,
+   "goish_min_ms": 5315.0,
+   "rewrite_mean_ms": 2792.4,
+   "rewrite_min_ms": 2741.0,
+   "speedup_mean": 2.04
+  },
+  {
+   "model": "ot_q8_0",
+   "threads": 4,
+   "goish_mean_ms": 2171.0,
+   "goish_min_ms": 2058.0,
+   "rewrite_mean_ms": 933.8,
+   "rewrite_min_ms": 888.0,
+   "speedup_mean": 2.32
+  },
+  {
+   "model": "ot_q8_0",
+   "threads": 8,
+   "goish_mean_ms": 1632.0,
+   "goish_min_ms": 1549.0,
+   "rewrite_mean_ms": 847.8,
+   "rewrite_min_ms": 834.0,
+   "speedup_mean": 1.92
+  },
+  {
+   "model": "ot_q8_0",
+   "threads": 16,
+   "goish_mean_ms": 1555.2,
+   "goish_min_ms": 1451.0,
+   "rewrite_mean_ms": 787.6,
+   "rewrite_min_ms": 757.0,
+   "speedup_mean": 1.97
+  }
+ ]
+}
