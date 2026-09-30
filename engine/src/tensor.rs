@@ -754,7 +754,7 @@ unsafe fn nblock_fmlal<const NR: usize>(
     wp: usize,
     base: usize,
     k: usize,
-    r: usize,
+    _r: usize,
 ) -> ([float32x4_t; NR], usize) {
     let mut a = [vdupq_n_f32(0.); NR];
     let mut j = 0;
@@ -797,7 +797,7 @@ unsafe fn nblock_sdot<const NR: usize>(
     nblk: usize,
     wp: usize,
     base: usize,
-    r: usize,
+    _r: usize,
 ) -> ([float32x4_t; NR], usize) {
     let mut a = [vdupq_n_f32(0.); NR];
     for blk in 0..nblk {
