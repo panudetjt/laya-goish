@@ -3,19 +3,25 @@
 The engine's aarch64 NEON kernel tier is implemented in `engine/src/tensor.rs`
 (behind `#[cfg(target_arch = "aarch64")]`, gemm-0.19-lifted grid + hardware
 FCVT f16→f32 dequant fused in the k-loop; scalar reference kernels remain the
-selectable fallback). Ticket 18 adds three runtime-selectable variants —
-`LAYA_AARCH64_KERNEL={scalar,fcvt,fmlal,sdot}`:
+selectable fallback). Ticket 18 added three runtime-selectable variants —
+`LAYA_AARCH64_KERNEL={scalar,fcvt,fmlal,sdot}` — and the M1 A/B runs
+(2026-09-30, runs #1-#2) decided them:
 
-- **fcvt** (default) — the ticket-17 portable ARMv8-A path (FCVT dequant +
-  `vfmaq_f32` grid, now on 16-row blocks).
-- **fmlal** (FEAT_FHM, ARMv8.2 — M1 has it) — F16 matmuls via the fused
-  half-precision FMA-long (`fmlal`/`fmlal2`, katgpt-rs Issue-201 technique,
-  lifted per the T2 rule) against per-row-block f16-narrowed activations
-  (hardware FCVTN). Different summation arithmetic than fcvt: A/B candidate,
-  adoption gated on this run's drift + latency tables.
-- **sdot** (FEAT_DOTPROD, ARMv8.2) — Q8_0 matmuls via `sdot` i8×i8→i32 dots
-  against per-32-block quantized activations (llama.cpp-style arithmetic).
-  Same A/B status.
+- **fcvt** — the shipping default. Fastest for Laya F16 and OpenThai F16;
+  all 6 drift gates PASS on hardware.
+- **fmlal** — REJECTED: slower than fcvt everywhere on the M1 (Laya F16 t1
+  +25%, OT F16 t1 +50%) and it breaches Laya's action-head dact (the
+  16-row grid already amortizes the FCVT, so the lift's premise didn't
+  transfer). Kept selectable for research only.
+- **sdot** — **RECOMMENDED FOR OPENTHAI Q8_0 SERVING** (owner decision,
+  2026-09-30): run OT Q8_0 workloads with `LAYA_AARCH64_KERNEL=sdot` —
+  **1.77× faster** (965.4 vs 1711.1 ms @ 8 threads on the M1) and it beats
+  OT F16 by 1.53×, with all OpenThai drift gates PASS on hardware
+  (dlogit 0, dp ≤ 5.7e-4, flips 0). Laya keeps the fcvt default: under
+  sdot, Laya Q8_0's action head exceeds the absolute dact bar
+  (4.62 vs 0.05 — block-quantization error on ±4000-magnitude action
+  logits; probabilities and choices unaffected). Laya workloads must NOT
+  set the env var.
 
 This package is everything the owner's MacBook M1 needs to produce the
 acceptance numbers. Cross-ISA outputs are NEVER bit-identical (map decision):

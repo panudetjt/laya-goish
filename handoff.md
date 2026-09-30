@@ -38,13 +38,15 @@ ledger).
   also revealed Q8_0 checkpoints store the action head as F16 — mixed-kind
   models). **sdot: 5/6 — 1.77× on OT Q8_0 (965.4 ms @ t8, reproduced),
   sole breach = Laya Q8_0 action-head dact 4.62 under block-quantized
-  activations.** Owner picks the sdot scope: (i) relative-dact criterion
-  (contract change), (ii) OpenThai Q8_0-scoped enablement (gate-clean
-  today; e.g. shipped OT artifacts recommend the env var), (iii)
-  research-only. On that pick, ticket 18 closes and ticket 20 unblocks.
-  run-m1.sh is fixed (env form, exit checks, stderr capture, pipefail —
-  run #1's drift stage lost every non-fcvt decide to an `env -e` typo).
-  Inherited optional item: `CANDLE=1`.
+  activations.** **Owner decision (2026-09-30): option 2 — sdot scoped to
+  OpenThai Q8_0.** OT Q8_0 serving on Apple Silicon recommends
+  `LAYA_AARCH64_KERNEL=sdot` (1.77×, all OT gates PASS on hardware under
+  the variant); Laya keeps fcvt (do NOT set the env var for Laya — its Q8_0
+  action head breaches the absolute dact bar). Recorded in
+  `engine/aarch64/README.md`. **TICKET 18 CLOSED.** run-m1.sh is fixed
+  (env form, exit checks, stderr capture, pipefail — run #1's drift stage
+  lost every non-fcvt decide to an `env -e` typo). Inherited optional
+  (non-blocking) item: `CANDLE=1`.
 
 ### The rule-3 incident (read this before touching kernels)
 
@@ -88,14 +90,17 @@ index's adoption ledger.
 
 ## Open tickets (order to work)
 
-1. **#18 (C: NEON tuning)** — implementation done; **owner M1 A/B run +
-   paste-back closes it**. Optional inherited item: candle bar.
-2. **#20 (Ship v0.2)** — blocked by #18's close only. `engine/ci/package.sh`
-   produces the artifact sets; note the Cargo.toml now carries the katgpt
-   path dep + blake3 pin (packaging on machines without
-   `~/work/my-project/katgpt-rs` needs the git rev-pin switch — capability
-   index rule 5).
-3. **#19, #23** — wasm kernel BC + windows drain follow-ups.
+1. **#20 (Ship v0.2) — UNBLOCKED (18 closed 2026-09-30).** What remains:
+   version bump 0.1.0 → 0.2.0, the katgpt path dep → git rev-pin switch
+   (rule 5 — makes packaging self-contained on machines without
+   `~/work/my-project/katgpt-rs`; needs katgpt-rs to have a reachable
+   remote), re-run `engine/ci/package.sh` on the release commit + one
+   `ci/run.sh full`, release notes draft. Owner-gated pieces: windows
+   (.exe needs a Windows machine — ticket 23), macOS artifacts (the M1
+   flow exists; Intel Mac if one exists). The OT Q8_0 aarch64 artifact
+   carries the `LAYA_AARCH64_KERNEL=sdot` recommendation (ticket 18
+   decision, in engine/aarch64/README.md).
+2. **#19, #23** — wasm kernel BC + windows drain follow-ups.
 
 ## Uncommitted working tree (as of this doc)
 
